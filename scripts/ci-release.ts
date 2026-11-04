@@ -26,9 +26,24 @@ interface Asset {
 }
 interface Release {
   id: number;
+  name?: string;
   tag_name: string;
   draft: boolean;
   assets: Asset[];
+}
+function updateRelease(id: number, body: Record<string, unknown>) {
+  execFileSync(
+    "gh",
+    [
+      "api",
+      "--method",
+      "PATCH",
+      `repos/${repo}/releases/${id}`,
+      "--input",
+      "-",
+    ],
+    { input: JSON.stringify(body), encoding: "utf8", timeout: 40000 },
+  );
 }
 function release(): Release {
   const releases = JSON.parse(
@@ -60,7 +75,9 @@ if (phase === "prepare") {
   const releases = JSON.parse(
     gh(["api", `repos/${repo}/releases?per_page=30`]),
   ) as Release[];
-  const existing = releases.find((r) => r.tag_name === tag);
+  const existing =
+    releases.find((r) => r.tag_name === tag) ??
+    releases.find((r) => r.draft && r.name?.startsWith(`LocalShare ${tag} `));
   if (existing && !existing.draft)
     throw new Error("Published releases are not overwritten by this workflow");
   if (!existing)
@@ -82,28 +99,15 @@ if (phase === "prepare") {
       ],
       true,
     );
-  cleanup(release());
-  gh(
-    [
-      "release",
-      "edit",
-      tag,
-      "--repo",
-      repo,
-      "--notes-file",
-      `.github/release-notes/${tag}.md`,
-    ],
-    true,
-  );
-  if (process.env.GITHUB_SHA)
-    gh([
-      "api",
-      "--method",
-      "PATCH",
-      `repos/${repo}/releases/${release().id}`,
-      "-f",
-      `target_commitish=${process.env.GITHUB_SHA}`,
-    ]);
+  const draft = existing ?? release();
+  updateRelease(draft.id, {
+    tag_name: tag,
+    target_commitish: process.env.GITHUB_SHA ?? "main",
+    body: readFileSync(`.github/release-notes/${tag}.md`, "utf8"),
+    draft: true,
+    prerelease: true,
+  });
+  cleanup(draft);
 } else if (phase === "upload") {
   const item = release();
   if (!item.draft) throw new Error("Upload requires a draft release");
@@ -150,8 +154,5 @@ if (phase === "prepare") {
       throw new Error(`Missing verified build artifact: ${name}`);
   }
   cleanup(item);
-  gh(
-    ["release", "edit", tag, "--repo", repo, "--draft=false", "--prerelease"],
-    true,
-  );
+  updateRelease(item.id, { tag_name: tag, draft: false, prerelease: true });
 } else throw new Error("Expected prepare, upload or publish phase");
