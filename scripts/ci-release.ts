@@ -83,6 +83,27 @@ if (phase === "prepare") {
       true,
     );
   cleanup(release());
+  gh(
+    [
+      "release",
+      "edit",
+      tag,
+      "--repo",
+      repo,
+      "--notes-file",
+      `.github/release-notes/${tag}.md`,
+    ],
+    true,
+  );
+  if (process.env.GITHUB_SHA)
+    gh([
+      "api",
+      "--method",
+      "PATCH",
+      `repos/${repo}/releases/${release().id}`,
+      "-f",
+      `target_commitish=${process.env.GITHUB_SHA}`,
+    ]);
 } else if (phase === "upload") {
   const item = release();
   if (!item.draft) throw new Error("Upload requires a draft release");
