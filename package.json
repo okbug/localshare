@@ -1,0 +1,89 @@
+{
+  "name": "localshare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LocalSend-compatible LAN sharing with trusted clipboard and input sharing",
+  "author": "LocalShare contributors",
+  "license": "Apache-2.0",
+  "main": "dist/main/index.cjs",
+  "scripts": {
+    "dev": "bun scripts/dev.ts",
+    "start": "electron .",
+    "test": "bun test tests",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write src scripts tests vite.config.ts tsconfig.json package.json .github/workflows/build.yml",
+    "format:check": "prettier --check src scripts tests vite.config.ts tsconfig.json package.json .github/workflows/build.yml",
+    "build": "bun scripts/build.ts",
+    "native": "bun scripts/native.ts",
+    "native:win:cross": "bun scripts/cross-windows.ts",
+    "pack": "bun run build && electron-builder --dir",
+    "dist:mac": "bun run build && electron-builder --mac zip",
+    "dist:win": "bun run build && electron-builder --win nsis portable",
+    "smoke": "bun build scripts/smoke.ts --target=node --packages=external --outfile=test-results/smoke.mjs && node test-results/smoke.mjs"
+  },
+  "build": {
+    "appId": "org.localshare.desktop",
+    "productName": "LocalShare",
+    "icon": "assets/icon.png",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "NOTICE",
+      "LICENSE"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "extraResources": [
+        {
+          "from": "native/bin/localshare-input",
+          "to": "native/localshare-input"
+        }
+      ],
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "LocalShare 通过局域网发现设备和传输文件。",
+        "NSInputMonitoringUsageDescription": "经你开启后，跨屏共享需要监听键盘和鼠标。"
+      }
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "extraResources": [
+        {
+          "from": "native/bin/localshare-input.exe",
+          "to": "native/localshare-input.exe"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "lucide-react": "^1.68.0",
+    "node-forge": "^1.4.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/node": "^26.6.6",
+    "@types/node-forge": "^1.3.14",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "electron": "^45.2.2",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.64.1",
+    "prettier": "^3.9.10",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}

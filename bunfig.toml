@@ -1,0 +1,5 @@
+[install]
+trustedDependencies = ["electron", "esbuild"]
+
+[test]
+root = "./tests"

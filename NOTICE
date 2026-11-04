@@ -1,0 +1,16 @@
+LocalShare
+Copyright 2026 LocalShare contributors.
+
+LocalShare is an independent TypeScript implementation of the documented
+LocalSend v2 protocol, with separate LocalShare device collaboration extensions.
+
+Reference project: LocalSend (https://github.com/localsend/localsend)
+Copyright LocalSend contributors. Licensed under Apache License 2.0.
+Protocol: https://github.com/localsend/protocol
+
+LocalSend names and trademarks belong to their respective owners. This project
+does not imply endorsement by or affiliation with LocalSend.
+
+Icons: lucide-react, ISC license. React / React DOM: MIT license.
+node-forge: BSD-3-Clause / GPL-2.0 (used under BSD-3-Clause).
+Dependency license texts are retained in the packaged dependencies / notices.
