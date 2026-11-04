@@ -2,7 +2,21 @@
 
 日期：2026-11-04。执行环境：macOS arm64，Node 22.22.3，Bun 1.3.5，Electron 45.2.2。
 
-## 已运行的检查
+## 0.1.1：Mac 签名故障回归
+
+用户反馈“已损坏，无法打开”后，对旧包复现 `codesign --verify --deep --strict` 失败：`code has no resources but signature indicates they must be present`。0.1.0 的本机运行检查没有覆盖资源签名完整性，原记录中的“可启动”不能当作互联网下载后已获系统信任。
+
+0.1.1 已验证：
+- `LOCALSHARE_TEST_MAC_APP=... bun test`：14 项 Node 集成测试全部通过，包含真实发行 app 的严格签名回归。
+- `bun run verify:mac release/LocalShare-0.1.1-arm64-mac.zip`：ZIP 解压后的 app、Bundle ID 与原生 helper 校验通过。
+- `codesign` 显示正确标识 `org.localshare.desktop`、`adhoc,runtime` 和完整资源封装，Hardened Runtime 保留。
+- 签名后构建钩子在生成 ZIP 前强制检查，CI 也增加打包检查。
+- 对最终签名产物重新运行双实例 Electron 文件接收、配对、设置检查，通过。
+- `spctl --assess` **仍返回 rejected**：本机没有有效的 Developer ID 发行证书，也未进行 Apple 公证。ad-hoc 签名不提供发行者信任，不能声称 Gatekeeper 已接受。首次打开可能需要用户按照 Apple 官方步骤在“隐私与安全性”中明确允许这个应用。
+
+0.1.1 仅发布 Mac 签名修复包，Windows 用户继续使用 0.1.0 安装包。
+
+## 0.1.0 基础功能检查
 
 - `bun test`：13 项 Node 集成用例，Bun 负责编译和运行；核心在与 Electron 一致的 Node 运行时测试。
 - `bun run typecheck`：严格 TypeScript 检查。

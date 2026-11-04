@@ -5,6 +5,13 @@ await import("./icon");
 await mkdir("dist/main", { recursive: true });
 await Promise.all([
   build({
+    entryPoints: ["scripts/mac-signature.ts"],
+    outfile: "dist/tools/mac-signature.cjs",
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+  }),
+  build({
     entryPoints: ["src/main/index.ts"],
     outfile: "dist/main/index.cjs",
     bundle: true,

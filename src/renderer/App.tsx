@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { version as appVersion } from "../../package.json";
 import {
   ArrowUpRight,
   ArrowDownLeft,
@@ -348,7 +349,8 @@ export default function App() {
             <span>{pages.find((p) => p.id === page)?.label}</span>
           </div>
           <span className="version">
-            v0.1.0<span>桌面预览版</span>
+            v{appVersion}
+            <span>桌面预览版</span>
           </span>
         </header>
         <div className="content">
@@ -1085,7 +1087,7 @@ export default function App() {
                 <div className="about-tags">
                   <span>Electron + Bun</span>
                   <span>Apache-2.0</span>
-                  <span>v0.1.0</span>
+                  <span>v{appVersion}</span>
                 </div>
               </section>
             </>

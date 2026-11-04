@@ -6,6 +6,8 @@ Electron + Bun 的局域网共享桌面应用。中文界面，面向 macOS 与 
 
 [下载安装包](https://github.com/okbug/localshare/releases) · [源码仓库](https://github.com/okbug/localshare)
 
+**Mac 用户请使用 0.1.1 或更新版本。** 0.1.0 的 Mac 包资源签名不完整，会触发“已损坏，无法打开”；0.1.1 修复应用与原生模块签名，并增加 ZIP 解压后的严格校验。
+
 ![发送界面](docs/images/localshare.png)
 
 ## 功能
@@ -87,7 +89,9 @@ bun run dist:win
 
 本次已在 Mac 上产出 macOS arm64 ZIP、Windows x64 安装 EXE 和便携 EXE。Windows 输入模块使用官方 Zig 交叉编译（SHA-256 校验下载）；这验证了编译和打包，还没有验证 Windows 实际运行。Mac 上需要复现交叉构建时，先运行 `bun run native:win:cross`，再运行 `bunx electron-builder --win --x64 -c.win.signExecutable=false`；正常 Windows 原生构建仍推荐上面的 `dist:win`。
 
-GitHub Actions 包含 macOS arm64 / x64、Windows x64 原生构建任务，可手动触发或推送版本标签后构建。当前版本没有发行签名 / Apple 公证；正式分发前应配置开发者证书。预览版安装包在本仓库的 [Releases](https://github.com/okbug/localshare/releases) 中提供。
+GitHub Actions 包含 macOS arm64 / x64、Windows x64 原生构建任务，可手动触发或推送版本标签后构建。当前 Mac 预览版使用 ad-hoc 签名，尚未获得 Developer ID 发行签名与 Apple 公证；正式分发前应配置开发者证书。预览版安装包在本仓库的 [Releases](https://github.com/okbug/localshare/releases) 中提供。
+
+首次打开新包时，如果系统提示无法验证开发者，可在确认下载来源为本仓库后，按照 [Apple 官方说明](https://support.apple.com/zh-cn/102445)，在“系统设置 → 隐私与安全性”中为 LocalShare 选择“仍要打开”。签名完整性校验与 Apple 公证是两个独立检查；本地 ad-hoc 签名不会消除未公证应用的首次信任提示。
 
 ## 验证
 
@@ -96,6 +100,9 @@ bun test
 bun run typecheck
 bun run build
 bun run smoke
+bun run verify:mac
+# 校验实际 ZIP 的解压结果：
+bun run verify:mac release/LocalShare-0.1.1-arm64-mac.zip
 ```
 
 Bun 管理工具链；集成测试由 Bun 构建后在 Node 运行，使用与 Electron 一致的 TLS 行为。桌面检查也在 Node 中启动真正的 Electron，避免 Bun 与调试协议实现的差异。测试仅使用临时目录、回环地址和测试内容，不向真实网络设备发送文件。
