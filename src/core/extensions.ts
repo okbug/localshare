@@ -24,7 +24,13 @@ import {
 } from "./service";
 import { fingerprint } from "./identity";
 import { atomicJSON } from "./files";
-import { request, jsonReply, HttpError, type Reply } from "./transport";
+import {
+  request,
+  jsonReply,
+  HttpError,
+  closeConnections,
+  type Reply,
+} from "./transport";
 interface Trust extends TrustedPeer {
   inbound: string;
   outbound: string;
@@ -209,6 +215,7 @@ export class Extensions extends EventEmitter {
     await this.save();
     this.publish();
     this.emit("trustChanged", fp);
+    closeConnections(this.service.identity.fingerprint, fp);
     if (device?.protocol === "https")
       await request(this.service.identity, device, `${PREFIX}/unpair`, {
         headers: { authorization: `Bearer ${trust.outbound}` },
@@ -284,6 +291,7 @@ export class Extensions extends EventEmitter {
       {
         json,
         headers: { authorization: `Bearer ${trust.outbound}` },
+        keepAlive: path.startsWith("/control/"),
         ...options,
       },
     );
@@ -430,6 +438,7 @@ export class Extensions extends EventEmitter {
     return true;
   }
   async stop() {
+    closeConnections(this.service.identity.fingerprint);
     for (const [id, p] of this.pending) {
       p.resolve?.(false);
       p.abort?.abort();

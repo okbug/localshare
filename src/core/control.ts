@@ -8,6 +8,12 @@ export type InputEvent =
   | { type: "key"; key: number; down: boolean }
   | { type: "button"; button: number; down: boolean }
   | { type: "scroll"; dx: number; dy: number };
+export interface InputAdapter {
+  capture(): Promise<void>;
+  receive(position: { side: "left" | "right"; y: number }): Promise<void>;
+  inject(event: InputEvent): void;
+  release(): void;
+}
 interface Session {
   id: string;
   fp: string;
@@ -15,6 +21,7 @@ interface Session {
   side: "left" | "right";
   lastSeen: number;
   seq: number;
+  sentSeq: number;
   ack: number;
   queue: { seq: number; event: InputEvent }[];
   abort: AbortController;
@@ -50,6 +57,7 @@ export function validInput(e: unknown): e is InputEvent {
   return false;
 }
 export class Control extends EventEmitter {
+  input?: InputAdapter;
   private session?: Session;
   private timer: ReturnType<typeof setInterval>;
   get mode() {
@@ -94,11 +102,20 @@ export class Control extends EventEmitter {
           side: body.side,
           lastSeen: Date.now(),
           seq: 0,
+          sentSeq: 0,
           ack: 0,
           queue: [],
           abort: new AbortController(),
           polling: false,
         };
+        const receiving = this.session;
+        try {
+          await this.input?.receive({ side: body.side, y: body.y });
+          if (this.session !== receiving) throw new Error("输入接收已取消");
+        } catch (error) {
+          await this.stop(false);
+          throw new HttpError(503, (error as Error).message);
+        }
         this.publish();
         this.emit("receive", { side: body.side, y: body.y });
         reply(res, 200, { ok: true });
@@ -134,8 +151,10 @@ export class Control extends EventEmitter {
               };
             });
           if (s.queue.length)
-            await new Promise<void>((resolve) => setTimeout(resolve, 12));
-          reply(res, 200, { id: s.id, events: s.queue.slice(0, 256) });
+            await new Promise<void>((resolve) => setTimeout(resolve, 4));
+          const batch = s.queue.slice(0, 256);
+          if (batch.length) s.sentSeq = Math.max(s.sentSeq, batch.at(-1)!.seq);
+          reply(res, 200, { id: s.id, events: batch });
         } finally {
           s.polling = false;
         }
@@ -176,6 +195,7 @@ export class Control extends EventEmitter {
       side,
       lastSeen: Date.now(),
       seq: 0,
+      sentSeq: 0,
       ack: 0,
       queue: [],
       abort: new AbortController(),
@@ -183,6 +203,8 @@ export class Control extends EventEmitter {
     };
     this.session = s;
     try {
+      await this.input?.capture();
+      if (this.session !== s) throw new Error("本机截获已取消");
       jsonReply(
         await this.extensions.call(
           fp,
@@ -203,6 +225,19 @@ export class Control extends EventEmitter {
     if (!validInput(event)) throw new Error("输入事件无效");
     const s = this.session;
     if (s?.mode !== "sending") return;
+    const tail = s.queue.at(-1);
+    if (
+      event.type === "move" &&
+      tail?.event.type === "move" &&
+      tail.seq > s.sentSeq &&
+      Math.abs(tail.event.dx + event.dx) <= 2000 &&
+      Math.abs(tail.event.dy + event.dy) <= 2000
+    ) {
+      tail.event.dx += event.dx;
+      tail.event.dy += event.dy;
+      s.wake?.();
+      return;
+    }
     if (s.queue.length >= 1024) {
       void this.stop();
       return;
@@ -236,6 +271,7 @@ export class Control extends EventEmitter {
           if (item.seq <= s.ack) continue;
           if (item.seq !== s.ack + 1 || !validInput(item.event))
             throw new Error("输入序号或事件无效");
+          this.input?.inject(item.event);
           s.ack = item.seq;
           this.emit("input", item.event);
         }
@@ -251,6 +287,7 @@ export class Control extends EventEmitter {
     this.session = undefined;
     s.abort.abort();
     s.wake?.();
+    this.input?.release();
     this.publish();
     this.emit("release");
     if (notify)

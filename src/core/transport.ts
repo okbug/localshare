@@ -15,6 +15,18 @@ export interface Reply {
   body: Buffer;
   fingerprint?: string;
 }
+const connectionPool = new Map<
+  string,
+  { agent: https.Agent; owner: string; peer: string }
+>();
+export function closeConnections(owner: string, peer?: string) {
+  for (const [key, connection] of connectionPool) {
+    if (connection.owner === owner && (!peer || connection.peer === peer)) {
+      connection.agent.destroy();
+      connectionPool.delete(key);
+    }
+  }
+}
 export async function request(
   identity: Identity,
   target: Endpoint,
@@ -27,14 +39,33 @@ export async function request(
     signal?: AbortSignal;
     timeout?: number;
     headers?: Record<string, string>;
+    keepAlive?: boolean;
   } = {},
 ): Promise<Reply> {
   let actual: string | undefined;
+  const reuse =
+    options.keepAlive === true &&
+    target.protocol === "https" &&
+    !!target.fingerprint;
+  const poolKey = JSON.stringify([
+    identity.fingerprint,
+    target.ip,
+    target.port,
+    target.fingerprint,
+  ]);
+  const existing = reuse ? connectionPool.get(poolKey) : undefined;
   const agent =
-    target.protocol === "https"
-      ? new https.Agent({ keepAlive: false })
-      : undefined;
-  if (agent) {
+    existing?.agent ??
+    (target.protocol === "https"
+      ? new https.Agent({
+          keepAlive: reuse,
+          maxSockets: 2,
+          maxFreeSockets: 2,
+          maxCachedSessions: 0,
+          scheduling: "lifo",
+        })
+      : undefined);
+  if (agent && !existing) {
     agent.createConnection = ((
       opts: tls.ConnectionOptions,
       callback: (error: Error | null, socket?: tls.TLSSocket) => void,
@@ -45,6 +76,7 @@ export async function request(
         key: identity.key,
         rejectUnauthorized: false,
       });
+      socket.setNoDelay(true);
       let done = false;
       const finish = (error: Error | null) => {
         if (done) return;
@@ -76,6 +108,20 @@ export async function request(
       socket.once("close", () => clearTimeout(timer));
       return undefined;
     }) as typeof agent.createConnection;
+    if (reuse) {
+      if (connectionPool.size >= 64) {
+        const oldest = connectionPool.keys().next().value;
+        if (oldest) {
+          connectionPool.get(oldest)?.agent.destroy();
+          connectionPool.delete(oldest);
+        }
+      }
+      connectionPool.set(poolKey, {
+        agent,
+        owner: identity.fingerprint,
+        peer: target.fingerprint!,
+      });
+    }
   }
   const body =
     options.json === undefined
@@ -103,6 +149,13 @@ export async function request(
           },
         },
         (res) => {
+          const certificate =
+            target.protocol === "https"
+              ? (res.socket as tls.TLSSocket).getPeerCertificate().raw
+              : undefined;
+          const responseFingerprint = certificate
+            ? fingerprint(certificate)
+            : actual;
           const parts: Buffer[] = [];
           let length = 0;
           res.on("data", (chunk) => {
@@ -115,7 +168,7 @@ export async function request(
             resolve({
               status: res.statusCode ?? 500,
               body: Buffer.concat(parts),
-              fingerprint: actual,
+              fingerprint: responseFingerprint,
             }),
           );
         },
@@ -130,7 +183,7 @@ export async function request(
       else req.end();
     });
   } finally {
-    agent?.destroy();
+    if (!reuse) agent?.destroy();
   }
 }
 export function jsonReply<T>(reply: Reply): T {

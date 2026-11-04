@@ -26,7 +26,8 @@ export function ControlSetupGuide() {
       <p>
         <strong>Mac 提示权限不足时：</strong>
         点击「检查权限」，按系统提示在「隐私与安全性 → 辅助功能」中允许
-        LocalShare / localshare-input，返回后重新打开总开关。
+        LocalShare /
+        localshare-input；如提示无法完整监听键盘，再检查「输入监控」，完全退出并重新打开应用后启用总开关。
       </p>
       <p className="setup-reminder">
         每次重启应用后，总开关需要重新开启。紧急恢复本机：Windows 按 Ctrl + Alt

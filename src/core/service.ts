@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import https from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { TLSSocket } from "node:tls";
+import type { Socket } from "node:net";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -17,7 +18,13 @@ import type {
   Transfer,
 } from "../shared/types";
 import { loadIdentity, fingerprint, type Identity } from "./identity";
-import { request, jsonReply, HttpError, type Endpoint } from "./transport";
+import {
+  request,
+  jsonReply,
+  HttpError,
+  closeConnections,
+  type Endpoint,
+} from "./transport";
 import { safeRelative, hashSource, receiveFile, atomicJSON } from "./files";
 import { Discovery, addresses } from "./discovery";
 
@@ -117,6 +124,8 @@ export class LocalShareService extends EventEmitter {
   readonly devices = new Map<string, Device>();
   private transfers: Transfer[] = [];
   private server?: https.Server;
+  private sockets = new Set<Socket>();
+  private stopping = false;
   private discovery?: Discovery;
   private incoming = new Map<string, IncomingSession>();
   private outgoing = new Map<string, OutgoingSession>();
@@ -191,6 +200,15 @@ export class LocalShareService extends EventEmitter {
       },
     );
     this.server.headersTimeout = 15000;
+    this.server.on("connection", (socket) => {
+      socket.setNoDelay(true);
+      if (this.stopping) {
+        socket.destroy();
+        return;
+      }
+      this.sockets.add(socket);
+      socket.once("close", () => this.sockets.delete(socket));
+    });
     this.server.requestTimeout = 0;
     this.server.maxConnections = 64;
     this.server.on("tlsClientError", () => {});
@@ -745,13 +763,17 @@ export class LocalShareService extends EventEmitter {
     this.record();
   }
   async stop() {
+    this.stopping = true;
+    if (this.identity) closeConnections(this.identity.fingerprint);
     this.discovery?.stop();
     clearInterval(this.cleanup);
     for (const id of [...this.incoming.keys(), ...this.outgoing.keys()])
       this.cancel(id);
     if (this.server) {
+      const closed = new Promise<void>((r) => this.server!.close(() => r()));
+      for (const socket of this.sockets) socket.destroy();
       this.server.closeAllConnections();
-      await new Promise<void>((r) => this.server!.close(() => r()));
+      await closed;
     }
     await this.persist;
   }

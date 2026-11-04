@@ -85,7 +85,13 @@ export interface Snapshot {
 }
 export interface DesktopSnapshot extends Snapshot {
   selection: Selection[];
-  native: { available: boolean; permission: boolean; error?: string };
+  native: {
+    available: boolean;
+    permission: boolean;
+    error?: string;
+    accessibility?: boolean;
+    inputMonitoring?: boolean;
+  };
 }
 export interface DesktopAPI {
   snapshot(): Promise<DesktopSnapshot>;
