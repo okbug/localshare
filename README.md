@@ -4,6 +4,8 @@ Electron + Bun 的局域网共享桌面应用。中文界面，面向 macOS 与 
 
 参考 [LocalSend 源码](https://github.com/localsend/localsend)和 [v2 协议](https://github.com/localsend/protocol)，独立实现传输核心，并加入可信设备协同。
 
+[下载安装包](https://github.com/okbug/localshare/releases) · [源码仓库](https://github.com/okbug/localshare)
+
 ![发送界面](docs/images/localshare.png)
 
 ## 功能
@@ -85,7 +87,7 @@ bun run dist:win
 
 本次已在 Mac 上产出 macOS arm64 ZIP、Windows x64 安装 EXE 和便携 EXE。Windows 输入模块使用官方 Zig 交叉编译（SHA-256 校验下载）；这验证了编译和打包，还没有验证 Windows 实际运行。Mac 上需要复现交叉构建时，先运行 `bun run native:win:cross`，再运行 `bunx electron-builder --win --x64 -c.win.signExecutable=false`；正常 Windows 原生构建仍推荐上面的 `dist:win`。
 
-GitHub Actions 包含 macOS arm64 / x64、Windows x64 原生构建任务，可手动触发或推送版本标签后构建。当前版本没有发行签名 / Apple 公证；正式分发前应配置开发者证书。此仓库尚未推送到远端或发布。
+GitHub Actions 包含 macOS arm64 / x64、Windows x64 原生构建任务，可手动触发或推送版本标签后构建。当前版本没有发行签名 / Apple 公证；正式分发前应配置开发者证书。预览版安装包在本仓库的 [Releases](https://github.com/okbug/localshare/releases) 中提供。
 
 ## 验证
 
