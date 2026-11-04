@@ -64,6 +64,7 @@ try {
   );
   for (const p of [a, b])
     await p.getByRole("button", { name: "设备协同", exact: false }).click();
+  await a.getByRole("region", { name: "键鼠共享开启步骤" }).waitFor();
   await a.getByRole("button", { name: "配对", exact: true }).click();
   await a.getByRole("button", { name: "校验码相同", exact: true }).waitFor();
   await b.getByRole("button", { name: "校验码相同", exact: true }).waitFor();

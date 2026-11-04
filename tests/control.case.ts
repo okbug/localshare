@@ -10,6 +10,57 @@ const waitFor = async (fn: () => boolean) => {
     await new Promise((r) => setTimeout(r, 20));
   }
 };
+test("remote control setup errors name the receiving device and the missing switch without raw JSON", async () => {
+  const a = await makePeer("Mac 测试"),
+    b = await makePeer("Windows 测试");
+  const ea = new Extensions(a.service),
+    eb = new Extensions(b.service);
+  const ca = new Control(ea),
+    cb = new Control(eb);
+  try {
+    await ea.start();
+    await eb.start();
+    const device = await a.service.register("127.0.0.1", b.service.info.port);
+    ea.on("pairing", (p) => ea.respondPair(p.id, true));
+    eb.on("pairing", (p) => eb.respondPair(p.id, true));
+    await ea.pair(device.fingerprint);
+    await ea.setSettings(false, true);
+    await ea.setPeer(device.fingerprint, { control: true });
+    await assert.rejects(
+      ca.start(device.fingerprint, "right", 0.5),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Windows 测试/);
+        assert.match(error.message, /总开关/);
+        assert.equal(error.message.startsWith("{"), false);
+        return true;
+      },
+    );
+    assert.equal(ca.mode, "local");
+    await eb.setSettings(false, true);
+    await assert.rejects(
+      ca.start(device.fingerprint, "right", 0.5),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Windows 测试/);
+        assert.match(error.message, /设备卡片/);
+        assert.match(error.message, /Mac 测试/);
+        return true;
+      },
+    );
+    assert.equal(ca.mode, "local");
+    await eb.setPeer(a.service.info.fingerprint, { control: true });
+    await ca.start(device.fingerprint, "right", 0.5);
+    assert.equal(ca.mode, "sending");
+  } finally {
+    await ca.dispose();
+    await cb.dispose();
+    await ea.stop();
+    await eb.stop();
+    await a.close();
+    await b.close();
+  }
+});
 test("control is opt-in, delivers ordered events and emergency stop releases both peers", async () => {
   const a = await makePeer("A"),
     b = await makePeer("B");

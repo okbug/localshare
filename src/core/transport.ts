@@ -134,11 +134,20 @@ export async function request(
   }
 }
 export function jsonReply<T>(reply: Reply): T {
-  if (reply.status < 200 || reply.status >= 300)
+  if (reply.status < 200 || reply.status >= 300) {
+    let message = reply.body.toString();
+    try {
+      const payload = JSON.parse(message);
+      if (typeof payload?.error === "string" && payload.error.trim())
+        message = payload.error;
+    } catch {
+      /* Legacy peers may return plain-text error messages. */
+    }
     throw new HttpError(
       reply.status,
-      reply.body.toString() || `HTTP ${reply.status}`,
+      message.slice(0, 2000) || `HTTP ${reply.status}`,
     );
+  }
   return JSON.parse(reply.body.toString()) as T;
 }
 export class HttpError extends Error {

@@ -69,8 +69,13 @@ export class Control extends EventEmitter {
         reply(res, 200, { ok: true });
         return true;
       }
-      if (!extensions.canControl(peer.fingerprint))
-        throw new HttpError(403, "键鼠共享未开启");
+      if (!extensions.canControl(peer.fingerprint)) {
+        const receiver = extensions.service.info.alias;
+        const message = extensions.snapshot().controlEnabled
+          ? `「${receiver}」尚未允许「${peer.alias}」共享键鼠。请在「${receiver}」的「设备协同 → 已配对设备」中，打开「${peer.alias}」设备卡片里的「共享键鼠」开关。`
+          : `「${receiver}」的键鼠总开关未开启。请在「${receiver}」的「设备协同」中打开「跨屏键盘与鼠标」，并在「${peer.alias}」设备卡片里打开「共享键鼠」。`;
+        throw new HttpError(403, message);
+      }
       if (path === "start") {
         if (this.session) throw new HttpError(409, "已有活动控制会话");
         if (

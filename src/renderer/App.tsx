@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { version as appVersion } from "../../package.json";
+import { ControlSetupGuide } from "./components/ControlSetupGuide";
 import {
   ArrowUpRight,
   ArrowDownLeft,
@@ -782,6 +783,7 @@ export default function App() {
                   <Monitor size={65} />
                 </div>
               </div>
+              <ControlSetupGuide />
               <section className="panel settings-panel">
                 <div className="setting-row">
                   <div className="setting-icon">
@@ -829,7 +831,7 @@ export default function App() {
                     }
                   />
                 </div>
-                {!state.native.permission || state.native.error ? (
+                {!state.native.permission ? (
                   <div className="permission-note">
                     <ShieldCheck size={18} />
                     <div>
@@ -844,6 +846,12 @@ export default function App() {
                     >
                       检查权限
                     </button>
+                  </div>
+                ) : null}
+                {state.native.permission && state.native.error ? (
+                  <div className="info-banner" role="alert">
+                    <MousePointer2 size={18} />
+                    <div>{state.native.error}</div>
                   </div>
                 ) : null}
                 <div className="control-status">

@@ -30,10 +30,16 @@ export class NativeInput extends EventEmitter {
     private extensions: Extensions,
   ) {
     super();
-    control.on("capture", () => this.send({ cmd: "capture" }));
-    control.on("receive", (position) =>
-      this.send({ cmd: "receive", ...position }),
-    );
+    control.on("capture", () => {
+      this.state.error = undefined;
+      this.emit("change");
+      this.send({ cmd: "capture" });
+    });
+    control.on("receive", (position) => {
+      this.state.error = undefined;
+      this.emit("change");
+      this.send({ cmd: "receive", ...position });
+    });
     control.on("input", (e) => this.send({ cmd: "event", ...e }));
     control.on("release", () => this.send({ cmd: "release" }));
     extensions.on("trustChanged", () => this.configure());

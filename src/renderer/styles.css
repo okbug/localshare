@@ -1227,6 +1227,33 @@ footer > span:last-child {
   gap: 6px;
   flex-wrap: wrap;
 }
+.control-setup {
+  padding: 21px 24px;
+  margin-bottom: 20px;
+}
+.control-setup h2 {
+  font-size: 14px;
+  color: #345b43;
+}
+.control-setup p {
+  color: #6b7f63;
+  font-size: 11px;
+  margin-top: 11px;
+}
+.control-setup ol {
+  padding-left: 21px;
+  margin: 14px 0;
+  color: #526b4c;
+  font-size: 12px;
+  line-height: 1.9;
+}
+.control-setup li + li {
+  margin-top: 8px;
+}
+.control-setup .setup-reminder {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
 .control-status .text-button {
   margin-left: auto;
 }
