@@ -75,6 +75,71 @@ try {
   await b.getByRole("button", { name: "校验码相同", exact: true }).click();
   await a.locator(".trusted-card").waitFor();
   await b.locator(".trusted-card").waitFor();
+  const inputOptions = a.getByRole("group", {
+    name: "控制 Windows PC 时的输入偏好",
+  });
+  await inputOptions.waitFor({ timeout: 3000 });
+  const invert = inputOptions.getByRole("switch", {
+    name: "Windows PC 反转滚轮方向",
+  });
+  const swap = inputOptions.getByRole("switch", {
+    name: "Windows PC 交换 Alt 与 Win / Command",
+  });
+  assert.equal(await invert.getAttribute("aria-checked"), "false");
+  assert.equal(await swap.getAttribute("aria-checked"), "false");
+  await invert.click();
+  await a.waitForFunction(
+    async () =>
+      (await window.localshare.snapshot()).extensions.trusted[0]
+        ?.invertScroll === true,
+  );
+  await swap.click();
+  await a.waitForFunction(
+    async () =>
+      (await window.localshare.snapshot()).extensions.trusted[0]?.swapAltWin ===
+      true,
+  );
+  await a.waitForFunction(() =>
+    ["Windows PC 反转滚轮方向", "Windows PC 交换 Alt 与 Win / Command"].every(
+      (label) =>
+        document
+          .querySelector(`[role="switch"][aria-label="${label}"]`)
+          ?.getAttribute("aria-checked") === "true",
+    ),
+  );
+  const unchanged = (await b.evaluate(() => window.localshare.snapshot()))
+    .extensions.trusted[0];
+  assert.equal(unchanged.invertScroll, false);
+  assert.equal(unchanged.swapAltWin, false);
+  const rejected = await a.evaluate(async () => {
+    const fp = (await window.localshare.snapshot()).extensions.trusted[0]
+      .fingerprint;
+    try {
+      await window.localshare.peerSettings(fp, {
+        invertScroll: "true",
+      } as never);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  assert.equal(rejected, true);
+  await inputOptions.screenshot({ path: "docs/images/input-preferences.png" });
+  await invert.click();
+  await a.waitForFunction(
+    async () =>
+      (await window.localshare.snapshot()).extensions.trusted[0]
+        ?.invertScroll === false,
+  );
+  await swap.click();
+  await a.waitForFunction(
+    async () =>
+      (await window.localshare.snapshot()).extensions.trusted[0]?.swapAltWin ===
+      false,
+  );
+  console.log(
+    "PASS: Both input preference switches default off, toggle independently, reject invalid IPC and leave the other direction unchanged.",
+  );
   await a.getByRole("switch", { name: "文本剪贴板共享", exact: true }).click();
   await b.getByRole("switch", { name: "文本剪贴板共享", exact: true }).click();
   assert.equal(

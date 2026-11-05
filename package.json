@@ -1,6 +1,6 @@
 {
   "name": "localshare",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "LocalSend-compatible LAN sharing with trusted clipboard and input sharing",

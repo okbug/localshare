@@ -3,6 +3,13 @@ import { randomUUID } from "node:crypto";
 import { Extensions } from "./extensions";
 import { readJSON, reply } from "./service";
 import { HttpError, jsonReply } from "./transport";
+import type { TrustedPeer } from "../shared/types";
+const swappedModifiers: Readonly<Record<number, number>> = {
+  164: 91,
+  165: 92,
+  91: 164,
+  92: 165,
+};
 export type InputEvent =
   | { type: "move"; dx: number; dy: number }
   | { type: "key"; key: number; down: boolean }
@@ -27,6 +34,7 @@ interface Session {
   abort: AbortController;
   wake?: () => void;
   polling: boolean;
+  inputPreferences?: Pick<TrustedPeer, "invertScroll" | "swapAltWin">;
 }
 export function validInput(e: unknown): e is InputEvent {
   if (!e || typeof e !== "object") return false;
@@ -188,6 +196,9 @@ export class Control extends EventEmitter {
     if (!this.extensions.canControl(fp))
       throw new Error("请先在两端开启键鼠共享");
     if (this.session) throw new Error("已有活动控制会话");
+    const peer = this.extensions
+      .snapshot()
+      .trusted.find((p) => p.fingerprint === fp)!;
     const s: Session = {
       id: randomUUID(),
       fp,
@@ -200,6 +211,11 @@ export class Control extends EventEmitter {
       queue: [],
       abort: new AbortController(),
       polling: false,
+      // A held modifier must use the same mapping for both down and up.
+      inputPreferences: {
+        invertScroll: peer.invertScroll,
+        swapAltWin: peer.swapAltWin,
+      },
     };
     this.session = s;
     try {
@@ -225,6 +241,14 @@ export class Control extends EventEmitter {
     if (!validInput(event)) throw new Error("输入事件无效");
     const s = this.session;
     if (s?.mode !== "sending") return;
+    if (event.type === "scroll" && s.inputPreferences?.invertScroll)
+      event = {
+        ...event,
+        dx: event.dx === 0 ? 0 : -event.dx,
+        dy: event.dy === 0 ? 0 : -event.dy,
+      };
+    else if (event.type === "key" && s.inputPreferences?.swapAltWin)
+      event = { ...event, key: swappedModifiers[event.key] ?? event.key };
     const tail = s.queue.at(-1);
     if (
       event.type === "move" &&

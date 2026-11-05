@@ -85,7 +85,11 @@ export class Extensions extends EventEmitter {
           /^[a-f0-9]{64}$/.test(p.inbound) &&
           /^[a-f0-9]{64}$/.test(p.outbound)
         )
-          this.trusted.set(p.fingerprint, p);
+          this.trusted.set(p.fingerprint, {
+            ...p,
+            invertScroll: p.invertScroll === true,
+            swapAltWin: p.swapAltWin === true,
+          });
       // Sharing requires a fresh opt-in after every application restart.
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT")
@@ -200,6 +204,8 @@ export class Extensions extends EventEmitter {
         clipboard: false,
         control: false,
         side: "right",
+        invertScroll: false,
+        swapAltWin: false,
       });
       await this.save();
     } finally {
@@ -224,20 +230,32 @@ export class Extensions extends EventEmitter {
   }
   async setPeer(
     fp: string,
-    patch: Partial<Pick<TrustedPeer, "clipboard" | "control" | "side">>,
+    patch: Partial<
+      Pick<
+        TrustedPeer,
+        "clipboard" | "control" | "side" | "invertScroll" | "swapAltWin"
+      >
+    >,
   ) {
     const peer = this.trusted.get(fp);
     if (!peer) throw new Error("设备尚未配对");
-    for (const key of ["clipboard", "control"] as const)
+    const next = { ...peer };
+    for (const key of [
+      "clipboard",
+      "control",
+      "invertScroll",
+      "swapAltWin",
+    ] as const)
       if (patch[key] !== undefined) {
         if (typeof patch[key] !== "boolean") throw new Error("开关值无效");
-        peer[key] = patch[key]!;
+        next[key] = patch[key]!;
       }
     if (patch.side !== undefined) {
       if (patch.side !== "left" && patch.side !== "right")
         throw new Error("位置无效");
-      peer.side = patch.side;
+      next.side = patch.side;
     }
+    this.trusted.set(fp, next);
     await this.save();
     this.publish();
     this.emit("trustChanged", fp);
@@ -397,6 +415,8 @@ export class Extensions extends EventEmitter {
         clipboard: false,
         control: false,
         side: "left",
+        invertScroll: false,
+        swapAltWin: false,
       });
       await this.save();
       this.removePending(p.public.id);

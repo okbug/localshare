@@ -1313,6 +1313,42 @@ footer > span:last-child {
   gap: 12px;
   padding: 19px 0 0;
 }
+.input-preferences {
+  border-top: 1px solid #eef2e7;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+.input-preferences h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+.input-preferences p,
+.input-preference-row small {
+  color: #748363;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.input-preferences p {
+  margin: 0 0 12px;
+}
+.input-preference-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  padding: 8px 0;
+}
+.input-preference-row strong,
+.input-preference-row small {
+  display: block;
+}
+.input-preference-row strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.input-preference-row .toggle {
+  flex-shrink: 0;
+}
 .screen-layout > div,
 .screen-layout > span {
   display: flex;

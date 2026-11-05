@@ -64,3 +64,12 @@
 - 代码签名、Apple 公证及 Windows SmartScreen 信誉。
 
 设备卡片截图由两个测试实例产生，其中“Windows PC”是测试名称，实际两个实例均运行于本机 macOS。截图不代表已连接真实 Windows。
+
+## 0.1.3 输入偏好验证（2026-11-05）
+
+- `bun run typecheck`、`bun run format:check`、`git diff --check` 通过。
+- 27 项集成检查通过，无跳过（使用 `LOCALSHARE_TEST_MAC_APP` 指向实际 0.1.3 Mac 应用，包含资源签名验证）。新增 3 项覆盖默认关闭、按方向隔离、独立/组合开关、双轴滚动、左右 Alt/Win、按下/松开、会话中变更、持久化、旧配对迁移和无效补丁无部分修改。
+- 新增输入偏好用例另在 Electron 自带 Node 中运行，3 项全部通过；通过实际双 HTTPS 服务传输到 InputAdapter 注入入口，不向用户桌面发送输入。
+- 真实双 Electron 窗口验证文件传输、配对、设置和两个开关；同时回读 IPC 设置和屏幕开关状态，确认未启用时为 false、可开启/关闭、对端方向保持不变、无效 IPC 值被拒绝，无 renderer 错误。截图已人工检查。
+- 本地 Mac 0.1.3 arm64 ZIP 构建及解压后完整资源签名、原生模块签名校验通过。发行签名仍为 ad-hoc，未做 Apple 公证。
+- 本次未修改原生辅助程序或网络协议。尚未实测物理 Windows / Mac 双机上的键盘布局、输入法与滚轮手感。

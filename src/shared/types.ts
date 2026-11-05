@@ -60,6 +60,8 @@ export interface TrustedPeer {
   clipboard: boolean;
   control: boolean;
   side: "left" | "right";
+  invertScroll: boolean;
+  swapAltWin: boolean;
 }
 export interface PairRequest {
   id: string;
@@ -116,7 +118,12 @@ export interface DesktopAPI {
   unpair(fingerprint: string): Promise<void>;
   peerSettings(
     fingerprint: string,
-    settings: Partial<Pick<TrustedPeer, "clipboard" | "control" | "side">>,
+    settings: Partial<
+      Pick<
+        TrustedPeer,
+        "clipboard" | "control" | "side" | "invertScroll" | "swapAltWin"
+      >
+    >,
   ): Promise<void>;
   extensionSettings(clipboard: boolean, control: boolean): Promise<void>;
   requestPermission(): Promise<void>;

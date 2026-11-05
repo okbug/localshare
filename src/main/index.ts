@@ -301,7 +301,14 @@ async function main() {
         typeof patch !== "object" ||
         Array.isArray(patch) ||
         Object.keys(patch).some(
-          (k) => !["clipboard", "control", "side"].includes(k),
+          (k) =>
+            ![
+              "clipboard",
+              "control",
+              "side",
+              "invertScroll",
+              "swapAltWin",
+            ].includes(k),
         )
       )
         throw new Error("设备设置无效");

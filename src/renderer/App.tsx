@@ -947,6 +947,54 @@ export default function App() {
                         </select>
                       </label>
                     </div>
+                    <div
+                      className="input-preferences"
+                      role="group"
+                      aria-label={`控制 ${p.alias} 时的输入偏好`}
+                    >
+                      <h4>控制此设备时的输入偏好</h4>
+                      <p>
+                        仅影响本机控制 {p.alias}{" "}
+                        时的输入；下次跨屏生效，重启后保留。
+                      </p>
+                      <div className="input-preference-row">
+                        <div>
+                          <strong>反转滚轮方向</strong>
+                          <small>同时反转横向与纵向滚动</small>
+                        </div>
+                        <Toggle
+                          label={`${p.alias} 反转滚轮方向`}
+                          on={p.invertScroll}
+                          change={() =>
+                            run(() =>
+                              window.localshare.peerSettings(p.fingerprint, {
+                                invertScroll: !p.invertScroll,
+                              }),
+                            )
+                          }
+                        />
+                      </div>
+                      <div className="input-preference-row">
+                        <div>
+                          <strong>交换 Alt 与 Win / Command</strong>
+                          <small>
+                            Windows 控制 Mac：Alt → Command，Win →
+                            Option；左右键分别对应
+                          </small>
+                        </div>
+                        <Toggle
+                          label={`${p.alias} 交换 Alt 与 Win / Command`}
+                          on={p.swapAltWin}
+                          change={() =>
+                            run(() =>
+                              window.localshare.peerSettings(p.fingerprint, {
+                                swapAltWin: !p.swapAltWin,
+                              }),
+                            )
+                          }
+                        />
+                      </div>
+                    </div>
                     <div className="screen-layout">
                       {p.side === "left" ? (
                         <span>
