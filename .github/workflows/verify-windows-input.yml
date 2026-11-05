@@ -18,5 +18,5 @@ jobs:
         with:
           arch: x64
       - run: bun run native
-      - run: bun build tests/native-windows.case.ts --target=node --outfile=test-results/native-windows.cjs
+      - run: bun build tests/native-windows.case.ts --target=node --format=cjs --outfile=test-results/native-windows.cjs
       - run: node --test test-results/native-windows.cjs
