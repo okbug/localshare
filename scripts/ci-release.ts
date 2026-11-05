@@ -84,33 +84,27 @@ if (phase === "prepare") {
     releases.find((r) => r.draft && r.name?.startsWith(`LocalShare ${tag} `));
   if (existing && !existing.draft)
     throw new Error("Published releases are not overwritten by this workflow");
-  if (!existing)
-    gh(
-      [
-        "release",
-        "create",
-        tag,
-        "--repo",
-        repo,
-        "--target",
-        process.env.GITHUB_SHA ?? "main",
-        "--title",
-        `LocalShare ${tag} 预览版`,
-        "--notes-file",
-        `.github/release-notes/${tag}.md`,
-        "--draft",
-        "--prerelease",
-      ],
-      true,
-    );
-  const draft = existing ?? release();
-  updateRelease(draft.id, {
+  const metadata = {
     tag_name: tag,
     target_commitish: process.env.GITHUB_SHA ?? "main",
+    name: `LocalShare ${tag} 预览版`,
     body: readFileSync(`.github/release-notes/${tag}.md`, "utf8"),
     draft: true,
     prerelease: true,
-  });
+  };
+  // Use the POST response's identity; listing newly created drafts may lag.
+  const draft: Release =
+    existing ??
+    JSON.parse(
+      execFileSync(
+        "gh",
+        ["api", "--method", "POST", `repos/${repo}/releases`, "--input", "-"],
+        { input: JSON.stringify(metadata), encoding: "utf8", timeout: 40000 },
+      ),
+    );
+  if (!Number.isSafeInteger(draft.id))
+    throw new Error("Created draft has no valid ID");
+  updateRelease(draft.id, metadata);
   cleanup(draft);
 } else if (phase === "upload") {
   const item = release();

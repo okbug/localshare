@@ -19,6 +19,7 @@ static CGPoint restorePoint, captureAnchor;
 static CGPoint realCursor(void){CGEventRef event=CGEventCreate(NULL);if(!event)return CGPointMake(NAN,NAN);CGPoint point=CGEventGetLocation(event);CFRelease(event);return point;}
 static CGRect realCaptureBounds(CGPoint point){CGDirectDisplayID display=0;uint32_t count=0;if(CGGetDisplaysWithPoint(point,1,&display,&count)!=kCGErrorSuccess||count==0)return CGRectZero;return CGDisplayBounds(display);}
 static BOOL realCapturePermission(void){return AXIsProcessTrusted()&&CGPreflightPostEventAccess()&&fullFilter&&eventTap&&CGEventTapIsEnabled(eventTap);}
+static BOOL realPostPermission(void){return CGPreflightPostEventAccess()?YES:NO;}
 static CGError realHide(void){return CGDisplayHideCursor(CGMainDisplayID());}
 static CGError realShow(void){return CGDisplayShowCursor(CGMainDisplayID());}
 static void realPostEvent(CGEventRef event){CGEventPost(kCGHIDEventTap,event);}
@@ -34,7 +35,7 @@ static struct {
   CGError (*warp)(CGPoint);
   void (*enableTap)(void);
   void (*postEvent)(CGEventRef);
-} captureOS={realCursor,realCaptureBounds,realCapturePermission,CGPreflightPostEventAccess,CGAssociateMouseAndMouseCursorPosition,realHide,realShow,CGWarpMouseCursorPosition,realEnableTap,realPostEvent};
+} captureOS={realCursor,realCaptureBounds,realCapturePermission,realPostPermission,CGAssociateMouseAndMouseCursorPosition,realHide,realShow,CGWarpMouseCursorPosition,realEnableTap,realPostEvent};
 static NSMutableArray *testEvents;
 static BOOL atPoint(CGPoint a,CGPoint b){return isfinite(a.x)&&isfinite(a.y)&&fabs(a.x-b.x)<0.5&&fabs(a.y-b.y)<0.5;}
 static NSDictionary *permissionState(void) {
