@@ -84,7 +84,7 @@ await writeFile(
   `const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('localshare',{
 snapshot:()=>ipcRenderer.invoke('snapshot'),
 subscribe:(fn)=>{const cb=(_,s)=>fn(s);ipcRenderer.on('state',cb);return()=>ipcRenderer.removeListener('state',cb)},
-refreshDisplays:(fp)=>ipcRenderer.invoke('refresh',fp),peerSettings:(fp,p)=>ipcRenderer.invoke('peer',fp,p),emergencyStop:async()=>{}});`,
+refreshDisplays:(fp)=>ipcRenderer.invoke('refresh',fp),peerSettings:(fp,p)=>ipcRenderer.invoke('peer',fp,p),emergencyStop:()=>ipcRenderer.invoke('stop'),controlDevice:(fp)=>ipcRenderer.invoke('control',fp),extensionSettings:(clip,control)=>ipcRenderer.invoke('extensions',clip,control)});`,
 );
 await writeFile(
   join(root, "main.cjs"),
@@ -94,6 +94,9 @@ globalThis.fixture=state;
 ipcMain.handle('snapshot',()=>state);
 ipcMain.handle('refresh',()=>{state.extensions.displayLayouts[${JSON.stringify(fp)}]=layout;publish();return layout});
 ipcMain.handle('peer',(_,fp,p)=>{Object.assign(state.extensions.trusted[0],p);publish()});
+ipcMain.handle('extensions',(_,clip,control)=>{state.extensions.clipboardEnabled=clip;state.extensions.controlEnabled=control;publish()});
+ipcMain.handle('control',(_,fp)=>{state.extensions.control={mode:'sending',peer:'Windows PC',fingerprint:fp,interaction:'manual'};publish()});
+ipcMain.handle('stop',()=>{state.extensions.control={mode:'local'};publish()});
 app.whenReady().then(()=>{window=new BrowserWindow({width:1300,height:1000,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:false}});window.loadFile(${JSON.stringify(resolve("dist/renderer/index.html"))})});`,
 );
 const env = Object.fromEntries(
@@ -112,6 +115,51 @@ try {
     name: "Windows PC 屏幕排列与入口",
   });
   await region.waitFor({ timeout: 3000 });
+  const start = page.getByRole("button", {
+    name: "开始控制 Windows PC 的键鼠",
+    exact: true,
+  });
+  assert.equal(
+    await start.isDisabled(),
+    true,
+    "manual control requires the global input switch",
+  );
+  await page
+    .getByRole("switch", { name: "跨屏键盘与鼠标", exact: true })
+    .click();
+  await start.click({ timeout: 3000 });
+  await page
+    .getByText("手动远控 · 正在控制 · Windows PC")
+    .waitFor({ timeout: 3000 });
+  assert.equal(
+    (await page.evaluate(() => window.localshare.snapshot())).extensions.control
+      .interaction,
+    "manual",
+  );
+  assert.equal(
+    (await page.evaluate(() => window.localshare.snapshot())).extensions.control
+      .fingerprint,
+    fp,
+  );
+  assert.equal(
+    await start.isDisabled(),
+    true,
+    "another control session cannot start while busy",
+  );
+  await page.getByRole("button", { name: "恢复本机控制", exact: true }).click();
+  await page.waitForFunction(
+    async () =>
+      (await window.localshare.snapshot()).extensions.control.mode === "local",
+  );
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('[aria-label="开始控制 Windows PC 的键鼠"]')
+        ?.getAttribute("disabled") === null,
+  );
+  await page
+    .locator(".manual-control")
+    .screenshot({ path: "docs/images/manual-control.png" });
   await region.getByLabel("Windows PC 进入屏幕").selectOption("DISPLAY2");
   assert.equal(
     (await page.evaluate(() => window.localshare.snapshot())).extensions
@@ -150,7 +198,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: Synthetic multi-monitor layout renders negative-origin portrait/main screens; entry selection/automatic/refresh work through IPC. No physical Windows device used.",
+    "PASS: Manual input start is authorization-gated, sends the exact target over IPC, updates status and stops; synthetic multi-monitor layout selection/automatic/refresh work. No physical input/device used.",
   );
 } finally {
   await app.close();

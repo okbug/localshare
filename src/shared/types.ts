@@ -88,7 +88,12 @@ export interface PairRequest {
 export interface ExtensionState {
   trusted: TrustedPeer[];
   pairing: PairRequest[];
-  control: { mode: "local" | "sending" | "receiving"; peer?: string };
+  control: {
+    mode: "local" | "sending" | "receiving";
+    peer?: string;
+    fingerprint?: string;
+    interaction?: "edge" | "manual";
+  };
   clipboardEnabled: boolean;
   controlEnabled: boolean;
   displayLayouts?: Record<string, DisplayLayout>;
@@ -152,6 +157,7 @@ export interface DesktopAPI {
   requestPermission(): Promise<void>;
   emergencyStop(): Promise<void>;
   refreshDisplays(fingerprint: string): Promise<DisplayLayout>;
+  controlDevice(fingerprint: string): Promise<void>;
 }
 declare global {
   interface Window {

@@ -109,12 +109,12 @@ export class NativeInput extends EventEmitter {
           try {
             const status = JSON.parse(stdout.trim());
             this.state.permission =
-              status.permission === true && status.protocolVersion === 3;
+              status.permission === true && status.protocolVersion === 4;
             if (status.displays) this.state.layout = parseDisplayLayout(status);
             this.state.accessibility = status.accessibility;
             this.state.inputMonitoring = status.listen;
             this.state.error =
-              status.protocolVersion !== 3
+              status.protocolVersion !== 4
                 ? "输入模块版本不匹配，请安装完整的新版本 LocalShare。"
                 : err
                   ? "输入模块检查失败"
@@ -171,7 +171,7 @@ export class NativeInput extends EventEmitter {
           const e = JSON.parse(line);
           if (e.type === "ready") {
             clearTimeout(timer);
-            if (e.permission === true && e.protocolVersion === 3) {
+            if (e.permission === true && e.protocolVersion === 4) {
               if (e.displays) this.state.layout = parseDisplayLayout(e);
               resolve();
             } else

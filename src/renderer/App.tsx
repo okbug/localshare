@@ -122,6 +122,7 @@ export default function App() {
   const [alias, setAlias] = useState("");
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState<string>();
+  const [startingControl, setStartingControl] = useState<string>();
   const [dragging, setDragging] = useState(false);
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -859,7 +860,7 @@ export default function App() {
                   <span className="connection-dot" />
                   {state.extensions.control.mode === "local"
                     ? "当前控制本机"
-                    : `${state.extensions.control.mode === "sending" ? "正在控制" : "正由其他设备控制"} · ${state.extensions.control.peer ?? ""}`}
+                    : `${state.extensions.control.interaction === "manual" ? "手动远控" : "自动跨屏"} · ${state.extensions.control.mode === "sending" ? "正在控制" : "正由其他设备控制"} · ${state.extensions.control.peer ?? ""}`}
                   <button
                     className="text-button"
                     onClick={() => run(() => window.localshare.emergencyStop())}
@@ -901,6 +902,38 @@ export default function App() {
                         <Unlink size={17} />
                       </button>
                     </div>
+                    <div className="manual-control">
+                      <button
+                        className="button"
+                        aria-label={`开始控制 ${p.alias} 的键鼠`}
+                        disabled={
+                          !state.extensions.controlEnabled ||
+                          !p.control ||
+                          !state.native.permission ||
+                          !state.native.available ||
+                          !state.devices.some(
+                            (d) => d.fingerprint === p.fingerprint,
+                          ) ||
+                          state.extensions.control.mode !== "local" ||
+                          !!startingControl
+                        }
+                        onClick={() => {
+                          setStartingControl(p.fingerprint);
+                          void run(() =>
+                            window.localshare.controlDevice(p.fingerprint),
+                          ).finally(() => setStartingControl(undefined));
+                        }}
+                      >
+                        <MousePointer2 size={15} />
+                        {startingControl === p.fingerprint
+                          ? "正在连接…"
+                          : "开始控制键鼠"}
+                      </button>
+                      <small>
+                        仅传键鼠，不显示画面。两端开启键鼠共享后即可手动接管，无需设置左右位置。Windows
+                        按 Ctrl+Alt+Esc、Mac 按 Control+Option+Esc 返回本机。
+                      </small>
+                    </div>
                     <div className="peer-options">
                       <label>
                         文本同步
@@ -931,7 +964,7 @@ export default function App() {
                         />
                       </label>
                       <label>
-                        设备位于本机
+                        自动跨屏时，设备位于本机
                         <select
                           aria-label={`${p.alias} 位置`}
                           value={p.side}
@@ -956,7 +989,7 @@ export default function App() {
                       <h4>控制此设备时的输入偏好</h4>
                       <p>
                         仅影响本机控制 {p.alias}{" "}
-                        时的输入；下次跨屏生效，重启后保留。
+                        时的输入；下次控制连接生效，重启后保留。
                       </p>
                       <div className="input-preference-row">
                         <div>

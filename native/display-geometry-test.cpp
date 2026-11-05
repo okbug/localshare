@@ -6,6 +6,20 @@ inline void geometryExpect(bool ok, const char* name) { if (!ok) throw std::runt
 inline bool geometryNear(double a,double b) { return std::abs(a-b)<0.001; }
 inline void runGeometryTests() {
   auto row=canonical({{"LEFT",-100,0,100,100},{"MAIN",0,0,100,100,true},{"RIGHT",100,0,100,100}});
+  auto manual=planReceive(row,true,{-75,42},false,1,"MISSING");
+  geometryExpect(manual.valid&&!manual.reposition&&geometryNear(manual.point.x,-75)&&geometryNear(manual.point.y,42),"manual receive preserves negative-origin target pointer without warp");
+  geometryExpect(manual.returnPortals.empty(),"manual receive has no return portal");
+  auto manualOther=planReceive(row,true,{-75,42},true,0,"MAIN");
+  geometryExpect(manualOther.valid&&!manualOther.reposition&&geometryNear(manualOther.point.x,manual.point.x)&&geometryNear(manualOther.point.y,manual.point.y)&&manualOther.returnPortals.empty(),"manual receive ignores side height and blocked entry display");
+  auto edge=planReceive(row,false,{-75,42},true,.25);
+  geometryExpect(edge.valid&&edge.reposition&&!edge.returnPortals.empty()&&geometryNear(edge.point.x,-95),"edge receive retains portal entry warp");
+  geometryExpect(!planReceive(row,false,{-75,42},true,.25,"MAIN").valid,"edge receive rejects fully blocked selected edge");
+  geometryExpect(!planReceive(row,false,{-75,42},true,.25,"MISSING").valid,"edge receive rejects missing selected display");
+  auto manualOutward=move(row,manual.point,-1000,0,manual.returnPortals);
+  geometryExpect(!manualOutward.returned&&geometryNear(manualOutward.point.x,-100),"manual exterior movement clamps without returning");
+  auto manualAcross=move(row,manual.point,1000,0,manual.returnPortals);
+  geometryExpect(!manualAcross.returned&&geometryNear(manualAcross.point.x,199),"manual movement traverses all actual monitors");
+  geometryExpect(move(row,edge.point,-1000,0,edge.returnPortals).returned,"edge receive after manual restores exterior return");
   auto b=bounds(row); geometryExpect(b.x==-100&&b.width==300,"negative virtual bounds");
   geometryExpect(containing(row,{-50,20})>=0,"negative screen containment");
   auto p=move(row,{-80,50},250,0).point; geometryExpect(geometryNear(p.x,170)&&geometryNear(p.y,50),"large movement crosses two seams");

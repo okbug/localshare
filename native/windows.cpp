@@ -17,7 +17,6 @@ constexpr ULONG_PTR marker = 0x4c534841;
 constexpr UINT commandMessage = WM_APP + 1;
 DWORD mainThread;
 bool capture = false, receiving = false, enabled = false, allowLeft = false, allowRight = false;
-bool returnLeft = true;
 std::vector<display_geometry::Display> displays;
 std::vector<display_geometry::Portal> returnPortals;
 ULONGLONG receivedAt = 0, lastLayoutCheck = 0;
@@ -164,13 +163,15 @@ void command(const std::string& s) {
     capture=true;ShowCursor(FALSE);emit("{\"type\":\"captured\",\"requestId\":\""+str(s,"requestId")+"\"}");
   }
   else if(cmd=="receive"){
-    releaseAll();if(!refreshLayout())return;returnLeft=str(s,"side")=="right";
-    auto selected=str(s,"display");if(!selected.empty()&&!validDisplayID(selected)){inputFailure("receive",ERROR_INVALID_DATA);return;}
-    auto portals=display_geometry::portals(displays,returnLeft,selected);
-    if(portals.empty()){inputFailure("receive",ERROR_NOT_FOUND);return;}
-    auto p=display_geometry::entry(displays,portals,num(s,"y"));
-    if(!SetCursorPos(LONG(std::lround(p.x)),LONG(std::lround(p.y)))){inputFailure("receive",GetLastError());return;}
-    returnPortals=std::move(portals);receivedAt=GetTickCount64();receiving=true;
+    releaseAll();if(!refreshLayout())return;
+    bool manual=boolean(s,"manual");auto selected=str(s,"display");
+    if(!manual&&!selected.empty()&&!validDisplayID(selected)){inputFailure("receive",ERROR_INVALID_DATA);return;}
+    POINT current{};
+    if(manual&&!GetCursorPos(&current)){inputFailure("receive",GetLastError());return;}
+    auto plan=display_geometry::planReceive(displays,manual,{double(current.x),double(current.y)},str(s,"side")=="right",num(s,"y"),selected);
+    if(!plan.valid){inputFailure("receive",ERROR_NOT_FOUND);return;}
+    if(plan.reposition&&!SetCursorPos(LONG(std::lround(plan.point.x)),LONG(std::lround(plan.point.y)))){inputFailure("receive",GetLastError());return;}
+    returnPortals=std::move(plan.returnPortals);receivedAt=GetTickCount64();receiving=true;
     emit("{\"type\":\"receiving\",\"requestId\":\""+str(s,"requestId")+"\"}");
   }
   else if(cmd=="release")releaseAll();
@@ -243,13 +244,13 @@ int main(int argc,char** argv){
       std::string value="{\"cmd\":\"event\",\"type\":\"key\",\"key\":65,\"down\":true}";
       INPUT down=keyInput(65,true),up=keyInput(65,false),button=buttonInput(0,true);
       bool geometry=false;try{runGeometryTests();geometry=true;}catch(const std::exception&e){std::cerr<<e.what()<<std::endl;}
-      bool passed=geometry&&str(value,"cmd")=="event"&&str(value,"type")=="key"&&num(value,"key")==65&&boolean(value,"down")&&down.ki.wScan!=0&&(down.ki.dwFlags&KEYEVENTF_SCANCODE)&&(up.ki.dwFlags&KEYEVENTF_KEYUP)&&button.mi.dwFlags==MOUSEEVENTF_LEFTDOWN&&displayID(L"\\\\.\\DISPLAY1")=="DISPLAY1"&&validDisplayID("DISPLAY1")&&!validDisplayID("bad\"id");
-      emit(std::string("{\"type\":\"self-test\",\"geometry\":")+(geometry?"true":"false")+",\"passed\":"+(passed?"true":"false")+"}");return passed?0:1;
+      bool passed=geometry&&boolean("{\"cmd\":\"receive\",\"manual\":true}","manual")&&str(value,"cmd")=="event"&&str(value,"type")=="key"&&num(value,"key")==65&&boolean(value,"down")&&down.ki.wScan!=0&&(down.ki.dwFlags&KEYEVENTF_SCANCODE)&&(up.ki.dwFlags&KEYEVENTF_KEYUP)&&button.mi.dwFlags==MOUSEEVENTF_LEFTDOWN&&displayID(L"\\\\.\\DISPLAY1")=="DISPLAY1"&&validDisplayID("DISPLAY1")&&!validDisplayID("bad\"id");
+      emit(std::string("{\"type\":\"self-test\",\"geometry\":")+(geometry?"true":"false")+",\"manualReceive\":"+(geometry?"true":"false")+",\"passed\":"+(passed?"true":"false")+"}");return passed?0:1;
     }
     if(arg!="--check"&&arg!="--request"&&arg!="--layout")return 2;
     if(!refreshLayout(false)){emit("{\"type\":\"error\",\"operation\":\"layout\"}");return 1;}
     if(arg=="--layout")emit("{"+layoutFields()+"}");
-    else emit("{\"type\":\"ready\",\"protocolVersion\":3,\"permission\":true,"+layoutFields()+"}");return 0;
+    else emit("{\"type\":\"ready\",\"protocolVersion\":4,\"permission\":true,"+layoutFields()+"}");return 0;
   }
   if(!refreshLayout(false)){emit("{\"type\":\"error\",\"operation\":\"layout\"}");return 1;}
   mainThread=GetCurrentThreadId();MSG msg;PeekMessage(&msg,nullptr,0,0,PM_NOREMOVE);
@@ -259,8 +260,8 @@ int main(int argc,char** argv){
   notificationWindow=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,0,0,nullptr,nullptr,wc.hInstance,nullptr);
   if(!notificationWindow){inputFailure("display-notifications",GetLastError());return 1;}
   mouseHook=SetWindowsHookEx(WH_MOUSE_LL,mouseProc,GetModuleHandle(nullptr),0);keyHook=SetWindowsHookEx(WH_KEYBOARD_LL,keyProc,GetModuleHandle(nullptr),0);
-  if(!mouseHook||!keyHook){emit("{\"type\":\"ready\",\"protocolVersion\":3,\"permission\":false}");return 1;}
-  lastCommand=GetTickCount64();emit("{\"type\":\"ready\",\"protocolVersion\":3,\"permission\":true,"+layoutFields()+"}");
+  if(!mouseHook||!keyHook){emit("{\"type\":\"ready\",\"protocolVersion\":4,\"permission\":false}");return 1;}
+  lastCommand=GetTickCount64();emit("{\"type\":\"ready\",\"protocolVersion\":4,\"permission\":true,"+layoutFields()+"}");
   std::thread([](){std::string line;while(std::getline(std::cin,line)){if(line.size()>32768)continue;auto p=new std::string(line);if(!PostThreadMessage(mainThread,commandMessage,0,reinterpret_cast<LPARAM>(p)))delete p;}PostThreadMessage(mainThread,WM_QUIT,0,0);}).detach();
   if(!SetTimer(nullptr,1,100,nullptr)){inputFailure("watchdog",GetLastError());return 1;}
   while(GetMessage(&msg,nullptr,0,0)>0){

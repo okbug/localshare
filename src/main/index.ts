@@ -329,6 +329,15 @@ async function main() {
     emergencyStop: () => control.stop(),
     refreshDisplays: (fp: unknown) =>
       extensions.fetchDisplayLayout(string(fp, 128)),
+    controlDevice: async (fp: unknown) => {
+      const target = string(fp, 128);
+      if (!extensions.canControl(target))
+        throw new Error(
+          "请先开启本机键鼠总开关，并打开对方设备卡片里的「共享键鼠」。两端都需要允许共享。",
+        );
+      await native.start();
+      await control.start(target, "right", 0.5, "manual");
+    },
   };
   ipcMain.handle(
     "localshare:call",

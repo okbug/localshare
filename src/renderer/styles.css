@@ -1297,6 +1297,20 @@ footer > span:last-child {
   padding-top: 16px;
   color: #95a683;
 }
+.manual-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+.manual-control small {
+  flex: 1;
+  min-width: 200px;
+  color: #748363;
+  font-size: 11px;
+  line-height: 1.7;
+}
 .peer-options label {
   display: flex;
   align-items: center;

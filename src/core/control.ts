@@ -26,6 +26,7 @@ export interface InputAdapter {
     side: "left" | "right";
     y: number;
     display?: string;
+    manual?: boolean;
   }): Promise<void>;
   inject(event: InputEvent): void;
   release(): void;
@@ -35,6 +36,7 @@ interface Session {
   fp: string;
   mode: "sending" | "receiving";
   side: "left" | "right";
+  interaction: "edge" | "manual";
   lastSeen: number;
   seq: number;
   sentSeq: number;
@@ -101,6 +103,10 @@ export class Control extends EventEmitter {
           : `「${receiver}」的键鼠总开关未开启。请在「${receiver}」的「设备协同」中打开「跨屏键盘与鼠标」，并在「${peer.alias}」设备卡片里打开「共享键鼠」。`;
         throw new HttpError(403, message);
       }
+      if (path === "capabilities") {
+        reply(res, 200, { version: 1, manual: true });
+        return true;
+      }
       if (path === "start") {
         if (this.session) throw new HttpError(409, "已有活动控制会话");
         if (
@@ -110,7 +116,10 @@ export class Control extends EventEmitter {
           typeof body.y !== "number" ||
           body.y < 0 ||
           body.y > 1 ||
-          (body.display !== undefined && !validDisplayId(body.display))
+          (body.display !== undefined && !validDisplayId(body.display)) ||
+          (body.interaction !== undefined &&
+            !["edge", "manual"].includes(body.interaction)) ||
+          (body.interaction === "manual" && body.display !== undefined)
         )
           throw new HttpError(400, "控制参数无效");
         this.session = {
@@ -118,6 +127,7 @@ export class Control extends EventEmitter {
           fp: peer.fingerprint,
           mode: "receiving",
           side: body.side,
+          interaction: body.interaction ?? "edge",
           lastSeen: Date.now(),
           seq: 0,
           sentSeq: 0,
@@ -149,6 +159,7 @@ export class Control extends EventEmitter {
             side: body.side,
             y: body.y,
             ...(body.display ? { display: body.display } : {}),
+            ...(body.interaction === "manual" ? { manual: true } : {}),
           });
           if (this.session !== receiving) throw new Error("输入接收已取消");
         } catch (error) {
@@ -157,7 +168,7 @@ export class Control extends EventEmitter {
         }
         this.publish();
         this.emit("receive", { side: body.side, y: body.y });
-        reply(res, 200, { ok: true });
+        reply(res, 200, { ok: true, interaction: receiving.interaction });
         void this.poll(this.session);
         return true;
       }
@@ -217,13 +228,22 @@ export class Control extends EventEmitter {
   private publish() {
     this.extensions.service.extensionSnapshot.control = {
       mode: this.mode,
+      interaction: this.session?.interaction,
+      fingerprint: this.session?.fp,
       peer: this.session
         ? this.extensions.service.devices.get(this.session.fp)?.alias
         : undefined,
     };
     this.extensions.publish();
   }
-  async start(fp: string, side: "left" | "right", y: number) {
+  async start(
+    fp: string,
+    side: "left" | "right",
+    y: number,
+    interaction: "edge" | "manual" = "edge",
+  ) {
+    if (interaction !== "edge" && interaction !== "manual")
+      throw new Error("控制模式无效");
     if (!this.extensions.canControl(fp))
       throw new Error("请先在两端开启键鼠共享");
     if (this.session) throw new Error("已有活动控制会话");
@@ -235,6 +255,7 @@ export class Control extends EventEmitter {
       fp,
       mode: "sending",
       side,
+      interaction,
       lastSeen: Date.now(),
       seq: 0,
       sentSeq: 0,
@@ -250,7 +271,26 @@ export class Control extends EventEmitter {
     };
     this.session = s;
     try {
-      if (peer.entryDisplay) {
+      if (interaction === "manual") {
+        const response = await this.extensions.call(
+          fp,
+          "/control/capabilities",
+          {},
+          { timeout: 1500, signal: s.abort.signal },
+        );
+        if ([404, 409, 501].includes(response.status))
+          throw new Error(
+            "对方不支持手动键鼠远控，请将两端升级到 0.1.5 或更新版本",
+          );
+        const capability = jsonReply<{
+          version?: unknown;
+          manual?: unknown;
+        } | null>(response);
+        if (capability?.version !== 1 || capability?.manual !== true)
+          throw new Error("对方不支持手动键鼠远控，请升级对方应用");
+        if (this.session !== s) throw new Error("控制连接已取消");
+      }
+      if (interaction === "edge" && peer.entryDisplay) {
         const layout = await this.extensions.fetchDisplayLayout(fp);
         if (
           !entryDisplays(layout, side === "right" ? "left" : "right").some(
@@ -262,7 +302,7 @@ export class Control extends EventEmitter {
       }
       await this.input?.capture();
       if (this.session !== s) throw new Error("本机截获已取消");
-      jsonReply(
+      const response = jsonReply<{ interaction?: unknown }>(
         await this.extensions.call(
           fp,
           "/control/start",
@@ -270,11 +310,16 @@ export class Control extends EventEmitter {
             id: s.id,
             side,
             y,
-            ...(peer.entryDisplay ? { display: peer.entryDisplay } : {}),
+            ...(interaction === "edge" && peer.entryDisplay
+              ? { display: peer.entryDisplay }
+              : {}),
+            ...(interaction === "manual" ? { interaction: "manual" } : {}),
           },
           { timeout: 1500, signal: s.abort.signal },
         ),
       );
+      if (interaction === "manual" && response?.interaction !== "manual")
+        throw new Error("对方未确认手动模式，请升级对方应用");
       if (this.session !== s) throw new Error("控制连接已取消");
       this.publish();
       this.emit("capture", { side });

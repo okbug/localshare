@@ -19,6 +19,28 @@ test(
     assert.equal(events.at(-1).suppressed, true);
     assert.equal(events.at(-1).hardwareDeltasPreserved, true);
     assert.equal(events.at(-1).syntheticSuppressed, true);
+    const receivePolicy = events.at(-1).receivePolicy;
+    assert.equal(
+      typeof receivePolicy,
+      "object",
+      "native self-test must exercise manual receive policy",
+    );
+    assert.deepEqual(
+      Object.keys(receivePolicy).sort(),
+      [
+        "manualPreserves",
+        "manualEdges",
+        "edgeReceiveReturn",
+        "manualRelease",
+        "manualEmergency",
+        "manualReset",
+        "manualPermissionFailure",
+        "manualWatchdog",
+      ].sort(),
+    );
+    for (const [name, passed] of Object.entries(receivePolicy)) {
+      assert.equal(passed, true, `Mac receive policy: ${name}`);
+    }
     const lifecycle = events.at(-1).lifecycle;
     assert.deepEqual(
       Object.keys(lifecycle).sort(),
@@ -73,6 +95,6 @@ test(
       }).trim(),
     );
     assert.equal(typeof readiness.permission, "boolean");
-    assert.equal(readiness.protocolVersion, 3);
+    assert.equal(readiness.protocolVersion, 4);
   },
 );

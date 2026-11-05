@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 namespace display_geometry {
 struct Point { double x, y; };
@@ -64,6 +65,12 @@ inline Point entry(const std::vector<Display>& ds,const std::vector<Portal>& ps,
   const auto&d=*std::find_if(ds.begin(),ds.end(),[&](const Display&d){return d.id==best->id;});
   double inset=std::min(5.0,(d.width-1)/2.0);
   return {best->left?d.x+inset:right(d)-1-inset,bestY-.5};
+}
+struct ReceivePlan { bool valid; bool reposition; Point point; std::vector<Portal> returnPortals; };
+inline ReceivePlan planReceive(const std::vector<Display>& ds,bool manual,Point current,bool left,double ratio,const std::string& selected="") {
+  if(manual)return {!ds.empty(),false,current,{}};
+  auto ps=portals(ds,left,selected);
+  return {!ps.empty(),true,entry(ds,ps,ratio),std::move(ps)};
 }
 inline bool portalAt(const std::vector<Portal>& ps,const Display&d,bool left,double y) {
   for(const auto&p:ps)if(p.id==d.id&&p.left==left&&y>=p.y0&&y<p.y1)return true;
