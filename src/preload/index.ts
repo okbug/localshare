@@ -8,7 +8,9 @@ const api: DesktopAPI = {
   subscribe: (fn) => {
     const listener = (_: unknown, value: DesktopSnapshot) => fn(value);
     ipcRenderer.on("localshare:state", listener);
-    return () => ipcRenderer.removeListener("localshare:state", listener);
+    return () => {
+      ipcRenderer.removeListener("localshare:state", listener);
+    };
   },
   selectFiles: (folder) => call("selectFiles", folder),
   addDropped: (paths) => call("addDropped", paths),

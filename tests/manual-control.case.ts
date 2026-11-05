@@ -87,7 +87,7 @@ test("manual input control advertises authorization, ignores edge placement and 
     JSON.parse(
       (await ea.call(fp, "/control/capabilities", {})).body.toString(),
     ),
-    { version: 1, manual: true },
+    { version: 1, manual: true, stopSharing: true },
   );
   await ea.setPeer(fp, { side: "left", entryDisplay: "REMOVED" });
   await ca.start(fp, "right", 0.5, "manual");
@@ -121,6 +121,9 @@ test("manual capability failure rejects an old peer before capturing local input
     undefined,
     null,
     [],
+    { version: 1, manual: true },
+    { version: 1, manual: true, stopSharing: false },
+    { version: 1, manual: true, stopSharing: "true" },
     { version: 1, manual: false },
     { version: 1, manual: "true" },
     { version: 2, manual: true },
@@ -157,4 +160,29 @@ test("edge mode stays compatible and malformed manual mode is rejected before na
   assert.deepEqual(positions, [{ side: "left", y: 0.25 }]);
   assert.equal(ea.snapshot().control.interaction, "edge");
   await ca.stop();
+});
+
+test("manual session IDs must fit the stop panel contract before receiver activation", async (t) => {
+  const { ea, fp, enable, positions } = await paired(t);
+  await enable();
+  for (const id of [
+    "",
+    "bad:foo",
+    "has space",
+    "line\nbreak",
+    "a".repeat(101),
+  ]) {
+    const response = await ea.call(fp, "/control/start", {
+      id,
+      side: "right",
+      y: 0.5,
+      interaction: "manual",
+    });
+    assert.equal(
+      response.status,
+      400,
+      `manual id ${JSON.stringify(id)} must be rejected`,
+    );
+    assert.deepEqual(positions, []);
+  }
 });

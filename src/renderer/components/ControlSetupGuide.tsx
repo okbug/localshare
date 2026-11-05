@@ -31,8 +31,9 @@ export function ControlSetupGuide() {
         localshare-input；如提示无法完整监听键盘，再检查「输入监控」，完全退出并重新打开应用后启用总开关。
       </p>
       <p className="setup-reminder">
-        每次重启应用后，总开关需要重新开启。紧急恢复本机：Windows 按 Ctrl + Alt
-        + Esc；Mac 按 Control + Option + Esc。
+        每次重启应用后，总开关需要重新开启。停止当前键鼠与文本共享：Windows 按
+        Ctrl + Alt + Esc；Mac 按 Control + Option +
+        Esc。正常跨屏回穿不会关闭独立的文本同步。
       </p>
     </section>
   );

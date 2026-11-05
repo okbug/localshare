@@ -5,7 +5,7 @@ on:
       tag:
         description: Preview tag matching package.json
         required: true
-        default: v0.1.5
+        default: v0.1.6
       artifact_run_id:
         description: Reuse already validated build artifacts from a run (optional)
         required: false
@@ -74,6 +74,9 @@ jobs:
       - run: bunx electron-builder ${{ matrix.args }} --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - run: bun run smoke:panel
+        env:
+          LOCALSHARE_PANEL_ASAR: ${{ matrix.target == 'mac' && 'release/mac-arm64/LocalShare.app/Contents/Resources/app.asar' || 'release/win-unpacked/resources/app.asar' }}
       - run: bun run verify:mac
         if: runner.os == 'macOS'
       - uses: actions/upload-artifact@v4

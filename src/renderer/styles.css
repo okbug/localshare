@@ -22,6 +22,65 @@
 body {
   margin: 0;
 }
+.control-overlay {
+  margin: 0;
+  width: 100%;
+  height: 100vh;
+  padding: 12px 14px;
+  border: 1px solid #c9dbcf;
+  border-radius: 10px;
+  background: #fbfdfb;
+  overflow: hidden;
+}
+.control-overlay-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.control-overlay-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.control-overlay-heading strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.control-overlay-stop {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: #fff;
+  background: #9c493f;
+  font-size: 12px;
+  font-weight: 600;
+}
+.control-overlay-stop:disabled {
+  opacity: 0.6;
+}
+.control-overlay-details {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #657b70;
+}
+.control-overlay-details kbd {
+  padding: 3px 6px;
+  border: 1px solid #d7e1d9;
+  border-radius: 5px;
+  background: #eff5ef;
+  font-family: inherit;
+  font-size: 11px;
+}
+.control-overlay-hint {
+  margin-top: 6px;
+  color: #6a7d72;
+  font-size: 11px;
+  line-height: 1.5;
+}
 button,
 input,
 textarea,

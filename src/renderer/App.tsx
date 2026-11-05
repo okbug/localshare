@@ -863,9 +863,10 @@ export default function App() {
                     : `${state.extensions.control.interaction === "manual" ? "手动远控" : "自动跨屏"} · ${state.extensions.control.mode === "sending" ? "正在控制" : "正由其他设备控制"} · ${state.extensions.control.peer ?? ""}`}
                   <button
                     className="text-button"
+                    disabled={state.extensions.control.mode === "local"}
                     onClick={() => run(() => window.localshare.emergencyStop())}
                   >
-                    恢复本机控制
+                    停止键鼠与文本共享
                   </button>
                   <kbd>Ctrl + Alt + Esc</kbd>
                 </div>

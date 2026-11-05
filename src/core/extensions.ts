@@ -65,6 +65,10 @@ export class Extensions extends EventEmitter {
   private pending = new Map<string, Pending>();
   private lastPair = new Map<string, number>();
   private lastClipboardHash = "";
+  private clipboardGeneration = 0;
+  private peerClipboardGenerations = new Map<string, number>();
+  private clipboardRequests = new Map<string, Set<AbortController>>();
+  private stopped = false;
   private clipboardEnabled = false;
   private controlEnabled = false;
   private persistence: Promise<void> = Promise.resolve();
@@ -80,6 +84,7 @@ export class Extensions extends EventEmitter {
     super();
   }
   async start() {
+    this.stopped = false;
     try {
       const saved = JSON.parse(
         await readFile(
@@ -233,6 +238,7 @@ export class Extensions extends EventEmitter {
     const trust = this.trusted.get(fp);
     const device = this.service.devices.get(fp);
     if (!trust) return;
+    this.revokeClipboard(fp);
     this.trusted.delete(fp);
     this.displayLayouts.delete(fp);
     await this.save();
@@ -291,12 +297,14 @@ export class Extensions extends EventEmitter {
       )
         next.entryDisplay = "";
     }
+    if (patch.clipboard !== undefined) this.revokeClipboard(fp);
     this.trusted.set(fp, next);
     await this.save();
     this.publish();
     this.emit("trustChanged", fp);
   }
   async setSettings(clipboard: boolean, control: boolean) {
+    if (this.clipboardEnabled !== clipboard) this.revokeClipboard();
     this.clipboardEnabled = clipboard;
     this.controlEnabled = control;
     this.publish();
@@ -374,28 +382,74 @@ export class Extensions extends EventEmitter {
   noteClipboardChange(text: string) {
     this.lastClipboardHash = digest(text);
   }
-  async sendClipboard(text: string) {
-    if (
-      !this.clipboardEnabled ||
-      !text ||
-      Buffer.byteLength(text) > 1024 * 1024
-    )
-      return;
-    this.noteClipboardChange(text);
-    await Promise.allSettled(
-      [...this.trusted.values()]
-        .filter((p) => p.clipboard && this.service.devices.has(p.fingerprint))
-        .map(async (p) => {
-          const response = await this.call(
-            p.fingerprint,
-            "/clipboard",
-            { text },
-            { timeout: 5000 },
-          );
-          if (response.status !== 200 && response.status !== 409)
-            this.emit("notice", `剪贴板未同步至 ${p.alias}`);
+  /** An immutable lease: revoking then re-enabling cannot revive old work. */
+  clipboardPermit(fp: string): () => boolean {
+    const generation = this.clipboardGeneration;
+    const peerGeneration = this.peerClipboardGenerations.get(fp) ?? 0;
+    return () =>
+      !this.stopped &&
+      this.clipboardEnabled &&
+      this.trusted.get(fp)?.clipboard === true &&
+      generation === this.clipboardGeneration &&
+      peerGeneration === (this.peerClipboardGenerations.get(fp) ?? 0);
+  }
+  private revokeClipboard(fp?: string) {
+    this.lastClipboardHash = "";
+    if (fp)
+      this.peerClipboardGenerations.set(
+        fp,
+        (this.peerClipboardGenerations.get(fp) ?? 0) + 1,
+      );
+    else this.clipboardGeneration++;
+    for (const [peer, requests] of this.clipboardRequests) {
+      if (fp && fp !== peer) continue;
+      for (const controller of requests) controller.abort();
+    }
+  }
+  pauseClipboard(fp: string): Promise<void> {
+    return this.setPeer(fp, { clipboard: false });
+  }
+  /** Capture recipient leases before an asynchronous OS clipboard read. */
+  prepareClipboardSend(): (text: string) => Promise<void> {
+    const recipients = [...this.trusted.values()]
+      .filter((p) => p.clipboard && this.service.devices.has(p.fingerprint))
+      .map((p) => ({ peer: p, permit: this.clipboardPermit(p.fingerprint) }));
+    return async (text) => {
+      if (
+        !text ||
+        Buffer.byteLength(text) > 1024 * 1024 ||
+        !recipients.some(({ permit }) => permit())
+      )
+        return;
+      this.noteClipboardChange(text);
+      await Promise.allSettled(
+        recipients.map(async ({ peer, permit }) => {
+          if (!permit()) return;
+          const controller = new AbortController();
+          const requests =
+            this.clipboardRequests.get(peer.fingerprint) ??
+            new Set<AbortController>();
+          requests.add(controller);
+          this.clipboardRequests.set(peer.fingerprint, requests);
+          try {
+            const response = await this.call(
+              peer.fingerprint,
+              "/clipboard",
+              { text },
+              { timeout: 5000, signal: controller.signal },
+            );
+            if (permit() && response.status !== 200 && response.status !== 409)
+              this.emit("notice", `剪贴板未同步至 ${peer.alias}`);
+          } finally {
+            requests.delete(controller);
+            if (!requests.size) this.clipboardRequests.delete(peer.fingerprint);
+          }
         }),
-    );
+      );
+    };
+  }
+  async sendClipboard(text: string) {
+    await this.prepareClipboardSend()(text);
   }
   private async route(
     req: IncomingMessage,
@@ -485,6 +539,7 @@ export class Extensions extends EventEmitter {
     const known = this.service.devices.get(peer.fingerprint);
     if (known) known.lastSeen = Date.now();
     if (path === "/unpair") {
+      this.revokeClipboard(peer.fingerprint);
       this.trusted.delete(peer.fingerprint);
       this.displayLayouts.delete(peer.fingerprint);
       await this.save();
@@ -494,9 +549,10 @@ export class Extensions extends EventEmitter {
       return true;
     }
     if (path === "/clipboard") {
-      if (!this.clipboardEnabled || !peer.clipboard)
-        throw new HttpError(409, "剪贴板同步未开启");
+      const permit = this.clipboardPermit(peer.fingerprint);
+      if (!permit()) throw new HttpError(409, "剪贴板同步未开启");
       const data = await readJSON(req, 1024 * 1024 + 16384);
+      if (!permit()) throw new HttpError(409, "剪贴板同步已暂停");
       if (
         typeof data.text !== "string" ||
         !data.text ||
@@ -506,7 +562,7 @@ export class Extensions extends EventEmitter {
       const hash = digest(data.text);
       if (this.lastClipboardHash !== hash) {
         this.lastClipboardHash = hash;
-        this.emit("clipboard", data.text);
+        this.emit("clipboard", data.text, permit);
       }
       reply(res, 200, { ok: true });
       return true;
@@ -524,6 +580,8 @@ export class Extensions extends EventEmitter {
     return true;
   }
   async stop() {
+    this.stopped = true;
+    this.revokeClipboard();
     closeConnections(this.service.identity.fingerprint);
     for (const [id, p] of this.pending) {
       p.resolve?.(false);

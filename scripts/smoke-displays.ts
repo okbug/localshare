@@ -146,7 +146,9 @@ try {
     true,
     "another control session cannot start while busy",
   );
-  await page.getByRole("button", { name: "恢复本机控制", exact: true }).click();
+  await page
+    .getByRole("button", { name: "停止键鼠与文本共享", exact: true })
+    .click();
   await page.waitForFunction(
     async () =>
       (await window.localshare.snapshot()).extensions.control.mode === "local",

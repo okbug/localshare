@@ -22,11 +22,13 @@ import { Control } from "../core/control";
 import { collectSources, atomicJSON } from "../core/files";
 import { NativeInput } from "./native";
 import { ClipboardSync } from "./clipboard";
+import { ControlPanel } from "./control-panel";
 import type {
   DesktopSnapshot,
   Source,
   Selection,
   TrustedPeer,
+  ControlPanelState,
 } from "../shared/types";
 
 if (process.env.LOCALSHARE_DATA_DIR)
@@ -40,6 +42,15 @@ let window: BrowserWindow | undefined,
   control: Control,
   native: NativeInput,
   clipboardSync: ClipboardSync;
+let controlPanel: ControlPanel | undefined;
+function notifyControl(title: string, body: string) {
+  try {
+    if (!quitting && Notification.isSupported())
+      new Notification({ title, body }).show();
+  } catch {
+    /* An optional OS notification must not interrupt input release. */
+  }
+}
 const selection = new Map<string, Source & Selection>();
 const devURL = process.env.LOCALSHARE_DEV_URL;
 const settingsPath = join(app.getPath("userData"), "settings.json");
@@ -60,6 +71,25 @@ const snapshot = (): DesktopSnapshot => ({
   })),
   native: native.state,
 });
+function panelState(): ControlPanelState | null {
+  const state = extensions.snapshot(),
+    current = state.control;
+  if (
+    current.mode === "local" ||
+    current.interaction !== "manual" ||
+    !current.id
+  )
+    return null;
+  const peer = state.trusted.find((p) => p.fingerprint === current.fingerprint);
+  return {
+    sessionId: current.id,
+    peer: current.peer ?? peer?.alias ?? "对方设备",
+    direction: current.mode,
+    clipboard: state.clipboardEnabled && peer?.clipboard === true,
+    shortcut:
+      process.platform === "darwin" ? "Control+Option+Esc" : "Ctrl+Alt+Esc",
+  };
+}
 let broadcastTimer: ReturnType<typeof setTimeout> | undefined;
 function broadcast() {
   if (broadcastTimer) return;
@@ -166,6 +196,8 @@ async function main() {
   }
   app.on("second-instance", show);
   await app.whenReady();
+  if (devURL && devURL !== "http://127.0.0.1:5173")
+    throw new Error("不允许的开发地址");
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, cb) =>
     cb(false),
   );
@@ -193,8 +225,21 @@ async function main() {
   if (process.platform === "win32")
     extensions.displayProvider = () => native.readLayout();
   clipboardSync = new ClipboardSync(extensions);
+  control.flushClipboard = () => clipboardSync.flush();
+  controlPanel = new ControlPanel({
+    getState: panelState,
+    onStop: (id) => control.stopSharing(id),
+    devURL,
+    onError: () => {
+      notifyControl(
+        "控制窗口出现异常",
+        "已尝试恢复本机控制；也可使用紧急停止快捷键。",
+      );
+    },
+  });
   service.on("change", () => {
     native.configure();
+    controlPanel?.sync();
     broadcast();
   });
   native.on("change", broadcast);
@@ -209,6 +254,15 @@ async function main() {
     show();
   });
   extensions.on("pairing", () => show());
+  extensions.on("notice", (message: unknown) => {
+    if (
+      !quitting &&
+      typeof message === "string" &&
+      message.startsWith("键鼠") &&
+      Notification.isSupported()
+    )
+      notifyControl("LocalShare", message.slice(0, 400));
+  });
   await native.check();
   const methods: Record<string, (...args: any[]) => unknown> = {
     snapshot,
@@ -326,7 +380,7 @@ async function main() {
       native.configure();
     },
     requestPermission: () => native.check(true),
-    emergencyStop: () => control.stop(),
+    emergencyStop: () => control.stopSharing(),
     refreshDisplays: (fp: unknown) =>
       extensions.fetchDisplayLayout(string(fp, 128)),
     controlDevice: async (fp: unknown) => {
@@ -365,7 +419,10 @@ async function main() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "打开 LocalShare", click: show },
-      { label: "恢复本机键鼠控制", click: () => void control.stop() },
+      {
+        label: "停止当前键鼠与文本共享",
+        click: () => void control.stopSharing(),
+      },
       { type: "separator" },
       { label: "退出 LocalShare", click: () => app.quit() },
     ]),
@@ -403,7 +460,10 @@ async function main() {
       },
     ]),
   );
-  globalShortcut.register("Control+Alt+Escape", () => void control.stop());
+  globalShortcut.register(
+    "Control+Alt+Escape",
+    () => void control.stopSharing(),
+  );
   await createWindow();
   app.on("activate", show);
 }
@@ -412,10 +472,13 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   quitting = true;
   clearTimeout(broadcastTimer);
+  const stopSharing = control?.stopSharing();
+  controlPanel?.destroy();
   clipboardSync?.stop();
   native?.stop();
   globalShortcut.unregisterAll();
   void (async () => {
+    await stopSharing;
     await control?.dispose();
     await extensions?.stop();
     await service?.stop();

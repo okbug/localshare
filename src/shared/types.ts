@@ -89,6 +89,7 @@ export interface ExtensionState {
   trusted: TrustedPeer[];
   pairing: PairRequest[];
   control: {
+    id?: string;
     mode: "local" | "sending" | "receiving";
     peer?: string;
     fingerprint?: string;
@@ -97,6 +98,18 @@ export interface ExtensionState {
   clipboardEnabled: boolean;
   controlEnabled: boolean;
   displayLayouts?: Record<string, DisplayLayout>;
+}
+export interface ControlPanelState {
+  sessionId: string;
+  peer: string;
+  direction: "sending" | "receiving";
+  clipboard: boolean;
+  shortcut: string;
+}
+export interface ControlPanelAPI {
+  snapshot(): Promise<ControlPanelState | null>;
+  stop(sessionId: string): Promise<void>;
+  subscribe(fn: (state: ControlPanelState | null) => void): () => void;
 }
 export interface Snapshot {
   info: DeviceInfo;
@@ -162,5 +175,6 @@ export interface DesktopAPI {
 declare global {
   interface Window {
     localshare: DesktopAPI;
+    controlPanel: ControlPanelAPI;
   }
 }

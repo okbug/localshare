@@ -77,6 +77,10 @@ export function validInput(e: unknown): e is InputEvent {
 }
 export class Control extends EventEmitter {
   input?: InputAdapter;
+  flushClipboard?: () => Promise<void>;
+  // Poll failure or a normal stop may win the race with stopClipboard. Only
+  // the latest session for this peer may finish that pause, never an older one.
+  private latestSessionByPeer = new Map<string, string>();
   private session?: Session;
   private timer: ReturnType<typeof setInterval>;
   get mode() {
@@ -89,11 +93,38 @@ export class Control extends EventEmitter {
       const body = await readJSON(req, 32768);
       if (path === "stop") {
         if (
-          this.session?.fp === peer.fingerprint &&
-          this.session.id === body.id
+          body.stopClipboard !== undefined &&
+          typeof body.stopClipboard !== "boolean"
         )
-          await this.stop(false);
-        reply(res, 200, { ok: true });
+          throw new HttpError(400, "停止参数无效");
+        const active =
+          this.session?.fp === peer.fingerprint && this.session.id === body.id
+            ? this.session
+            : undefined;
+        const current =
+          typeof body.id === "string" &&
+          this.latestSessionByPeer.get(peer.fingerprint) === body.id;
+        if (active) this.releaseSession(active);
+        if (body.stopClipboard === true && current) {
+          const paused = extensions.pauseClipboard(peer.fingerprint);
+          const results = await Promise.allSettled([
+            paused,
+            this.drainClipboard(),
+          ]);
+          const clipboardStopped = results.every(
+            (r) => r.status === "fulfilled",
+          );
+          if (!clipboardStopped)
+            extensions.emit(
+              "notice",
+              "键鼠已释放，但文本同步暂停未完整保存，请检查设备开关。",
+            );
+          reply(res, 200, { ok: true, clipboardStopped });
+        } else
+          reply(res, 200, {
+            ok: true,
+            ...(body.stopClipboard === true ? { clipboardStopped: false } : {}),
+          });
         return true;
       }
       if (!extensions.canControl(peer.fingerprint)) {
@@ -104,7 +135,7 @@ export class Control extends EventEmitter {
         throw new HttpError(403, message);
       }
       if (path === "capabilities") {
-        reply(res, 200, { version: 1, manual: true });
+        reply(res, 200, { version: 1, manual: true, stopSharing: true });
         return true;
       }
       if (path === "start") {
@@ -112,6 +143,8 @@ export class Control extends EventEmitter {
         if (
           typeof body.id !== "string" ||
           body.id.length > 100 ||
+          (body.interaction === "manual" &&
+            !/^[A-Za-z0-9-]{1,100}$/.test(body.id)) ||
           !["left", "right"].includes(body.side) ||
           typeof body.y !== "number" ||
           body.y < 0 ||
@@ -137,6 +170,7 @@ export class Control extends EventEmitter {
           polling: false,
         };
         const receiving = this.session;
+        this.latestSessionByPeer.set(receiving.fp, receiving.id);
         try {
           if (body.display) {
             if (!extensions.displayProvider)
@@ -228,6 +262,7 @@ export class Control extends EventEmitter {
   private publish() {
     this.extensions.service.extensionSnapshot.control = {
       mode: this.mode,
+      id: this.session?.id,
       interaction: this.session?.interaction,
       fingerprint: this.session?.fp,
       peer: this.session
@@ -270,6 +305,7 @@ export class Control extends EventEmitter {
       },
     };
     this.session = s;
+    this.latestSessionByPeer.set(s.fp, s.id);
     try {
       if (interaction === "manual") {
         const response = await this.extensions.call(
@@ -280,14 +316,21 @@ export class Control extends EventEmitter {
         );
         if ([404, 409, 501].includes(response.status))
           throw new Error(
-            "对方不支持手动键鼠远控，请将两端升级到 0.1.5 或更新版本",
+            "对方不支持手动键鼠远控，请将两端升级到 0.1.6 或更新版本",
           );
         const capability = jsonReply<{
           version?: unknown;
           manual?: unknown;
+          stopSharing?: unknown;
         } | null>(response);
-        if (capability?.version !== 1 || capability?.manual !== true)
-          throw new Error("对方不支持手动键鼠远控，请升级对方应用");
+        if (
+          capability?.version !== 1 ||
+          capability?.manual !== true ||
+          capability?.stopSharing !== true
+        )
+          throw new Error(
+            "对方不支持完整停止共享，请将两端升级到 0.1.6 或更新版本",
+          );
         if (this.session !== s) throw new Error("控制连接已取消");
       }
       if (interaction === "edge" && peer.entryDisplay) {
@@ -396,15 +439,65 @@ export class Control extends EventEmitter {
       }
     }
   }
-  async stop(notify = true) {
-    const s = this.session;
-    if (!s) return;
+  private drainClipboard(): Promise<void> {
+    try {
+      return this.flushClipboard?.() ?? Promise.resolve();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+  private releaseSession(s: Session) {
+    if (this.session !== s) return;
     this.session = undefined;
     s.abort.abort();
     s.wake?.();
-    this.input?.release();
+    try {
+      this.input?.release();
+    } catch {
+      this.extensions.emit(
+        "notice",
+        "键鼠释放遇到错误，已停止会话；输入模块将自动恢复本机控制。",
+      );
+    }
     this.publish();
     this.emit("release");
+  }
+  async stopSharing(expectedSessionId?: string): Promise<void> {
+    const s = this.session;
+    if (!s || (expectedSessionId !== undefined && expectedSessionId !== s.id))
+      return;
+    this.releaseSession(s);
+    // setPeer revokes in memory synchronously, before its persistence await.
+    const paused = this.extensions.pauseClipboard(s.fp);
+    const notified = this.extensions
+      .call(
+        s.fp,
+        "/control/stop",
+        { id: s.id, stopClipboard: true },
+        { timeout: 1500 },
+      )
+      .then((response) => {
+        if (
+          jsonReply<{ clipboardStopped?: unknown }>(response)
+            .clipboardStopped !== true
+        )
+          throw new Error("对方未确认文本同步暂停");
+      });
+    const results = await Promise.allSettled([
+      paused,
+      notified,
+      this.drainClipboard(),
+    ]);
+    if (results.some((r) => r.status === "rejected"))
+      this.extensions.emit(
+        "notice",
+        "键鼠已停止；未能确认双方文本同步均已暂停，请检查对方设备的文本同步开关。",
+      );
+  }
+  async stop(notify = true) {
+    const s = this.session;
+    if (!s) return;
+    this.releaseSession(s);
     if (notify)
       await this.extensions
         .call(s.fp, "/control/stop", { id: s.id }, { timeout: 1000 })

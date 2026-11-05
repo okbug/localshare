@@ -11,6 +11,14 @@ await Promise.all([
     sourcemap: true,
   }),
   build({
+    entryPoints: ["src/preload/control-panel.ts"],
+    outfile: "dist/preload/control-panel.cjs",
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    external: ["electron"],
+  }),
+  build({
     entryPoints: ["src/preload/index.ts"],
     outfile: "dist/preload/index.cjs",
     bundle: true,

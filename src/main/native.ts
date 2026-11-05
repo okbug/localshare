@@ -224,8 +224,8 @@ export class NativeInput extends EventEmitter {
                   this.state.error = error.message;
                   this.emit("change");
                 });
-          } else if (e.type === "return" || e.type === "emergency")
-            void this.control.stop();
+          } else if (e.type === "return") void this.control.stop();
+          else if (e.type === "emergency") void this.control.stopSharing();
           else if (validInput(e)) this.control.push(e);
         } catch {
           /* Malformed helper output never reaches the network. */
