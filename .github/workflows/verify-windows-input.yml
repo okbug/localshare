@@ -1,0 +1,22 @@
+name: Verify Windows display enumeration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  enumerate:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - run: bun run native
+      - run: bun build tests/native-windows.case.ts --target=node --outfile=test-results/native-windows.cjs
+      - run: node --test test-results/native-windows.cjs
