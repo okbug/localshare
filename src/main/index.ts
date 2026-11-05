@@ -23,6 +23,8 @@ import { collectSources, atomicJSON } from "../core/files";
 import { NativeInput } from "./native";
 import { ClipboardSync } from "./clipboard";
 import { ControlPanel } from "./control-panel";
+import { PanelRecoveryView } from "../shared/panel-recovery";
+import { boundedShutdown } from "./shutdown-deadline";
 import type {
   DesktopSnapshot,
   Source,
@@ -43,6 +45,14 @@ let window: BrowserWindow | undefined,
   native: NativeInput,
   clipboardSync: ClipboardSync;
 let controlPanel: ControlPanel | undefined;
+const recoveryView = new PanelRecoveryView(() => ({
+  sessionId: randomUUID(),
+  peer: "本机输入",
+  direction: "sending",
+  clipboard: false,
+  shortcut:
+    process.platform === "darwin" ? "Control+Option+Esc" : "Ctrl+Alt+Esc",
+}));
 function notifyControl(title: string, body: string) {
   try {
     if (!quitting && Notification.isSupported())
@@ -74,21 +84,37 @@ const snapshot = (): DesktopSnapshot => ({
 function panelState(): ControlPanelState | null {
   const state = extensions.snapshot(),
     current = state.control;
+  const recovering = native.state.recovering || native.state.recoveryFailed;
   if (
     current.mode === "local" ||
-    current.interaction !== "manual" ||
-    !current.id
+    !current.id ||
+    (!recovering && current.interaction !== "manual") ||
+    !/^[A-Za-z0-9-]{1,100}$/.test(current.id)
   )
-    return null;
+    return recoveryView.select(null, native.state);
   const peer = state.trusted.find((p) => p.fingerprint === current.fingerprint);
-  return {
-    sessionId: current.id,
-    peer: current.peer ?? peer?.alias ?? "对方设备",
-    direction: current.mode,
-    clipboard: state.clipboardEnabled && peer?.clipboard === true,
-    shortcut:
-      process.platform === "darwin" ? "Control+Option+Esc" : "Ctrl+Alt+Esc",
-  };
+  return recoveryView.select(
+    {
+      sessionId: current.id,
+      peer: current.peer ?? peer?.alias ?? "对方设备",
+      direction: current.mode,
+      clipboard: state.clipboardEnabled && peer?.clipboard === true,
+      shortcut:
+        process.platform === "darwin" ? "Control+Option+Esc" : "Ctrl+Alt+Esc",
+    },
+    native.state,
+  );
+}
+async function stopOrRecover(sessionId?: string): Promise<void> {
+  if (control.mode !== "local") await control.stopSharing(sessionId);
+  else if (
+    sessionId === undefined ||
+    native.state.recovering ||
+    native.state.recoveryFailed
+  ) {
+    if (native.state.recoveryFailed) show();
+    await native.recoverPointer();
+  }
 }
 let broadcastTimer: ReturnType<typeof setTimeout> | undefined;
 function broadcast() {
@@ -228,7 +254,7 @@ async function main() {
   control.flushClipboard = () => clipboardSync.flush();
   controlPanel = new ControlPanel({
     getState: panelState,
-    onStop: (id) => control.stopSharing(id),
+    onStop: (id) => stopOrRecover(id),
     devURL,
     onError: () => {
       notifyControl(
@@ -242,7 +268,10 @@ async function main() {
     controlPanel?.sync();
     broadcast();
   });
-  native.on("change", broadcast);
+  native.on("change", () => {
+    controlPanel?.sync();
+    broadcast();
+  });
   service.on("incoming", (t) => {
     if (Notification.isSupported())
       new Notification({
@@ -375,12 +404,12 @@ async function main() {
       const c = boolean(clip),
         i = boolean(input);
       if (i) await native.start();
-      else native.stop();
+      else await native.stop();
       await extensions.setSettings(c, i);
       native.configure();
     },
     requestPermission: () => native.check(true),
-    emergencyStop: () => control.stopSharing(),
+    emergencyStop: () => stopOrRecover(),
     refreshDisplays: (fp: unknown) =>
       extensions.fetchDisplayLayout(string(fp, 128)),
     controlDevice: async (fp: unknown) => {
@@ -421,7 +450,7 @@ async function main() {
       { label: "打开 LocalShare", click: show },
       {
         label: "停止当前键鼠与文本共享",
-        click: () => void control.stopSharing(),
+        click: () => void stopOrRecover().catch(() => {}),
       },
       { type: "separator" },
       { label: "退出 LocalShare", click: () => app.quit() },
@@ -462,7 +491,7 @@ async function main() {
   );
   globalShortcut.register(
     "Control+Alt+Escape",
-    () => void control.stopSharing(),
+    () => void stopOrRecover().catch(() => {}),
   );
   await createWindow();
   app.on("activate", show);
@@ -475,16 +504,23 @@ app.on("before-quit", (event) => {
   const stopSharing = control?.stopSharing();
   controlPanel?.destroy();
   clipboardSync?.stop();
-  native?.stop();
+  const nativeStop = native?.stop();
   globalShortcut.unregisterAll();
-  void (async () => {
-    await stopSharing;
-    await control?.dispose();
-    await extensions?.stop();
-    await service?.stop();
-    tray?.destroy();
-    app.quit();
-  })();
+  void boundedShutdown(
+    async () => {
+      await Promise.allSettled([stopSharing, nativeStop]);
+      await control?.dispose();
+      await extensions?.stop();
+      await service?.stop();
+    },
+    () => {
+      try {
+        tray?.destroy();
+      } finally {
+        app.quit();
+      }
+    },
+  );
 });
 void main().catch(async (error) => {
   quitting = true;

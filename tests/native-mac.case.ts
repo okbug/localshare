@@ -19,6 +19,33 @@ test(
     assert.equal(events.at(-1).suppressed, true);
     assert.equal(events.at(-1).hardwareDeltasPreserved, true);
     assert.equal(events.at(-1).syntheticSuppressed, true);
+    const releaseLiveness = events.at(-1).releaseLiveness;
+    assert.equal(typeof releaseLiveness, "object");
+    assert.deepEqual(
+      Object.keys(releaseLiveness).sort(),
+      [
+        "staleReadback",
+        "roundedReadback",
+        "userMotion",
+        "restoreWarpFailure",
+        "unreachableRestore",
+        "releaseAck",
+        "releaseError",
+        "recoverNoWarp",
+        "recoverFailure",
+        "recoveryCLI",
+        "recoveryCLIFailure",
+        "idleHeartbeat",
+        "idleHeartbeatReceive",
+        "omittedHeartbeat",
+        "shutdownNoWarp",
+        "shutdownBounded",
+        "showFailureAck",
+        "idleEdgeLiveness",
+      ].sort(),
+    );
+    for (const [name, passed] of Object.entries(releaseLiveness))
+      assert.equal(passed, true, `Mac release liveness: ${name}`);
     const receivePolicy = events.at(-1).receivePolicy;
     assert.equal(
       typeof receivePolicy,
@@ -45,7 +72,7 @@ test(
     assert.deepEqual(
       Object.keys(lifecycle).sort(),
       [
-        "attachFailureRestore",
+        "attachFailureUnlock",
         "centerAndRestore",
         "detachFailure",
         "doubleRelease",
@@ -95,6 +122,6 @@ test(
       }).trim(),
     );
     assert.equal(typeof readiness.permission, "boolean");
-    assert.equal(readiness.protocolVersion, 4);
+    assert.equal(readiness.protocolVersion, 5);
   },
 );

@@ -105,6 +105,8 @@ export interface ControlPanelState {
   direction: "sending" | "receiving";
   clipboard: boolean;
   shortcut: string;
+  phase?: "sharing" | "recovering" | "recovery-failed";
+  error?: string;
 }
 export interface ControlPanelAPI {
   snapshot(): Promise<ControlPanelState | null>;
@@ -129,6 +131,8 @@ export interface DesktopSnapshot extends Snapshot {
     accessibility?: boolean;
     inputMonitoring?: boolean;
     layout?: DisplayLayout;
+    recovering?: boolean;
+    recoveryFailed?: boolean;
   };
 }
 export interface DesktopAPI {

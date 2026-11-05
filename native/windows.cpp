@@ -70,7 +70,7 @@ bool readLayout(std::vector<display_geometry::Display>& result) {
 bool sameLayout(const std::vector<display_geometry::Display>& a,const std::vector<display_geometry::Display>& b) {
   if(a.size()!=b.size())return false;for(size_t n=0;n<a.size();++n){const auto&x=a[n];const auto&y=b[n];if(x.id!=y.id||x.x!=y.x||x.y!=y.y||x.width!=y.width||x.height!=y.height||x.primary!=y.primary)return false;}return true;
 }
-void releaseAll(bool restore = true);
+bool releaseAll(bool restore = true);
 bool refreshLayout(bool report=true);
 bool configureDPI() {
   using SetContext=BOOL(WINAPI*)(HANDLE);
@@ -121,12 +121,20 @@ INPUT buttonInput(int b,bool down) {
   return i;
 }
 bool sendButton(int b,bool down,bool report=true) {INPUT i=buttonInput(b,down);return inject(i,"button",report);}
-void releaseAll(bool restore) {
+bool releaseAll(bool restore) {
   if(capture)ShowCursor(TRUE);
   if(capture&&restore&&!displays.empty()){auto p=display_geometry::clamp(displays,{double(returnPoint.x),double(returnPoint.y)});SetCursorPos(LONG(std::lround(p.x)),LONG(std::lround(p.y)));}
   capture=false;receiving=false;lastEdge=GetTickCount64();
-  for(int key:keys)sendKey(key,false,false);for(int b:buttons)sendButton(b,false,false);
-  keys.clear();buttons.clear();returnPortals.clear();
+  bool ok=true;
+  for(int key:keys)if(!sendKey(key,false,false))ok=false;
+  for(int b:buttons)if(!sendButton(b,false,false))ok=false;
+  keys.clear();buttons.clear();returnPortals.clear();return ok;
+}
+std::string releasedEvent(const std::string& id,bool ok) {
+  return "{\"type\":\"released\",\"requestId\":\""+id+"\",\"ok\":"+(ok?"true":"false")+"}";
+}
+bool idleHeartbeat(const std::string& s) {
+  return str(s,"cmd")=="heartbeat"&&valueAt(s,"active")!=std::string::npos&&!boolean(s,"active");
 }
 bool refreshLayout(bool report) {
   lastLayoutCheck=GetTickCount64();
@@ -174,7 +182,17 @@ void command(const std::string& s) {
     returnPortals=std::move(plan.returnPortals);receivedAt=GetTickCount64();receiving=true;
     emit("{\"type\":\"receiving\",\"requestId\":\""+str(s,"requestId")+"\"}");
   }
-  else if(cmd=="release")releaseAll();
+  else if(cmd=="release"||cmd=="recover"){
+    if(cmd=="recover")enabled=false;
+    bool ok=releaseAll(cmd!="recover");
+    emit(releasedEvent(str(s,"requestId"),ok));
+    if(!ok)emit("{\"type\":\"error\",\"operation\":\"release\"}");
+  }
+  else if(idleHeartbeat(s)){
+    // Once idle, subsequent heartbeats must not warp or touch the cursor.
+    bool ok=true;if(capture||receiving||!keys.empty()||!buttons.empty())ok=releaseAll();
+    auto id=str(s,"releaseRequestId");if(!id.empty())emit(releasedEvent(id,ok));
+  }
   else if(cmd=="event"&&receiving){
     auto type=str(s,"type");
     if(type=="move"){
@@ -244,13 +262,14 @@ int main(int argc,char** argv){
       std::string value="{\"cmd\":\"event\",\"type\":\"key\",\"key\":65,\"down\":true}";
       INPUT down=keyInput(65,true),up=keyInput(65,false),button=buttonInput(0,true);
       bool geometry=false;try{runGeometryTests();geometry=true;}catch(const std::exception&e){std::cerr<<e.what()<<std::endl;}
-      bool passed=geometry&&boolean("{\"cmd\":\"receive\",\"manual\":true}","manual")&&str(value,"cmd")=="event"&&str(value,"type")=="key"&&num(value,"key")==65&&boolean(value,"down")&&down.ki.wScan!=0&&(down.ki.dwFlags&KEYEVENTF_SCANCODE)&&(up.ki.dwFlags&KEYEVENTF_KEYUP)&&button.mi.dwFlags==MOUSEEVENTF_LEFTDOWN&&displayID(L"\\\\.\\DISPLAY1")=="DISPLAY1"&&validDisplayID("DISPLAY1")&&!validDisplayID("bad\"id");
-      emit(std::string("{\"type\":\"self-test\",\"geometry\":")+(geometry?"true":"false")+",\"manualReceive\":"+(geometry?"true":"false")+",\"passed\":"+(passed?"true":"false")+"}");return passed?0:1;
+      bool releaseProtocol=idleHeartbeat("{\"cmd\":\"heartbeat\",\"active\":false}")&&!idleHeartbeat("{\"cmd\":\"heartbeat\",\"active\":true}")&&!idleHeartbeat("{\"cmd\":\"heartbeat\"}")&&releasedEvent("release-id",true)=="{\"type\":\"released\",\"requestId\":\"release-id\",\"ok\":true}";
+      bool passed=geometry&&releaseProtocol&&boolean("{\"cmd\":\"receive\",\"manual\":true}","manual")&&str(value,"cmd")=="event"&&str(value,"type")=="key"&&num(value,"key")==65&&boolean(value,"down")&&down.ki.wScan!=0&&(down.ki.dwFlags&KEYEVENTF_SCANCODE)&&(up.ki.dwFlags&KEYEVENTF_KEYUP)&&button.mi.dwFlags==MOUSEEVENTF_LEFTDOWN&&displayID(L"\\\\.\\DISPLAY1")=="DISPLAY1"&&validDisplayID("DISPLAY1")&&!validDisplayID("bad\"id");
+      emit(std::string("{\"type\":\"self-test\",\"geometry\":")+(geometry?"true":"false")+",\"releaseProtocol\":"+(releaseProtocol?"true":"false")+",\"manualReceive\":"+(geometry?"true":"false")+",\"passed\":"+(passed?"true":"false")+"}");return passed?0:1;
     }
     if(arg!="--check"&&arg!="--request"&&arg!="--layout")return 2;
     if(!refreshLayout(false)){emit("{\"type\":\"error\",\"operation\":\"layout\"}");return 1;}
     if(arg=="--layout")emit("{"+layoutFields()+"}");
-    else emit("{\"type\":\"ready\",\"protocolVersion\":4,\"permission\":true,"+layoutFields()+"}");return 0;
+    else emit("{\"type\":\"ready\",\"protocolVersion\":5,\"permission\":true,"+layoutFields()+"}");return 0;
   }
   if(!refreshLayout(false)){emit("{\"type\":\"error\",\"operation\":\"layout\"}");return 1;}
   mainThread=GetCurrentThreadId();MSG msg;PeekMessage(&msg,nullptr,0,0,PM_NOREMOVE);
@@ -260,8 +279,8 @@ int main(int argc,char** argv){
   notificationWindow=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,0,0,nullptr,nullptr,wc.hInstance,nullptr);
   if(!notificationWindow){inputFailure("display-notifications",GetLastError());return 1;}
   mouseHook=SetWindowsHookEx(WH_MOUSE_LL,mouseProc,GetModuleHandle(nullptr),0);keyHook=SetWindowsHookEx(WH_KEYBOARD_LL,keyProc,GetModuleHandle(nullptr),0);
-  if(!mouseHook||!keyHook){emit("{\"type\":\"ready\",\"protocolVersion\":4,\"permission\":false}");return 1;}
-  lastCommand=GetTickCount64();emit("{\"type\":\"ready\",\"protocolVersion\":4,\"permission\":true,"+layoutFields()+"}");
+  if(!mouseHook||!keyHook){emit("{\"type\":\"ready\",\"protocolVersion\":5,\"permission\":false}");return 1;}
+  lastCommand=GetTickCount64();emit("{\"type\":\"ready\",\"protocolVersion\":5,\"permission\":true,"+layoutFields()+"}");
   std::thread([](){std::string line;while(std::getline(std::cin,line)){if(line.size()>32768)continue;auto p=new std::string(line);if(!PostThreadMessage(mainThread,commandMessage,0,reinterpret_cast<LPARAM>(p)))delete p;}PostThreadMessage(mainThread,WM_QUIT,0,0);}).detach();
   if(!SetTimer(nullptr,1,100,nullptr)){inputFailure("watchdog",GetLastError());return 1;}
   while(GetMessage(&msg,nullptr,0,0)>0){

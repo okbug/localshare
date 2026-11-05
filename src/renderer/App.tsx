@@ -858,15 +858,27 @@ export default function App() {
                 ) : null}
                 <div className="control-status">
                   <span className="connection-dot" />
-                  {state.extensions.control.mode === "local"
-                    ? "当前控制本机"
-                    : `${state.extensions.control.interaction === "manual" ? "手动远控" : "自动跨屏"} · ${state.extensions.control.mode === "sending" ? "正在控制" : "正由其他设备控制"} · ${state.extensions.control.peer ?? ""}`}
+                  {state.native.recovering
+                    ? "正在恢复本机键鼠…"
+                    : state.native.recoveryFailed
+                      ? "本机输入恢复未确认"
+                      : state.extensions.control.mode === "local"
+                        ? "当前控制本机"
+                        : `${state.extensions.control.interaction === "manual" ? "手动远控" : "自动跨屏"} · ${state.extensions.control.mode === "sending" ? "正在控制" : "正由其他设备控制"} · ${state.extensions.control.peer ?? ""}`}
                   <button
                     className="text-button"
-                    disabled={state.extensions.control.mode === "local"}
+                    disabled={
+                      state.native.recovering ||
+                      (state.extensions.control.mode === "local" &&
+                        !state.native.recoveryFailed)
+                    }
                     onClick={() => run(() => window.localshare.emergencyStop())}
                   >
-                    停止键鼠与文本共享
+                    {state.native.recovering
+                      ? "正在恢复…"
+                      : state.native.recoveryFailed
+                        ? "恢复本机鼠标"
+                        : "停止键鼠与文本共享"}
                   </button>
                   <kbd>Ctrl + Alt + Esc</kbd>
                 </div>
@@ -912,6 +924,8 @@ export default function App() {
                           !p.control ||
                           !state.native.permission ||
                           !state.native.available ||
+                          state.native.recovering ||
+                          state.native.recoveryFailed ||
                           !state.devices.some(
                             (d) => d.fingerprint === p.fingerprint,
                           ) ||

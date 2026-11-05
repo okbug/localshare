@@ -21,6 +21,7 @@ test(
     assert.equal(selfTest.type, "self-test");
     assert.equal(selfTest.geometry, true);
     assert.equal(selfTest.manualReceive, true);
+    assert.equal(selfTest.releaseProtocol, true);
     assert.equal(selfTest.passed, true);
     const layout = parseDisplayLayout(
       JSON.parse(
@@ -35,7 +36,7 @@ test(
     const ready = JSON.parse(
       execFileSync(helper, ["--check"], { encoding: "utf8", timeout: 10000 }),
     );
-    assert.equal(ready.protocolVersion, 4);
+    assert.equal(ready.protocolVersion, 5);
     assert.equal(ready.permission, true);
     assert.deepEqual(parseDisplayLayout(ready), layout);
   },

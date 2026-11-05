@@ -1,0 +1,24 @@
+# Mac mouse release liveness fix
+
+> Execute autonomously using systematic debugging, TDD and verification. Delegate independent native cleanup and main-process lifecycle domains under superpowers:dispatching-parallel-agents. User reports mouse frozen after cancellation; no live cursor capture experiments.
+
+**Goal:** Ending control must restore free local mouse movement; original-position restoration must never keep a cursor pinned.
+
+**Evidence:** native/macos.m releaseAll leaves restorePending until immediate position readback matches exactly, then watchdog repeats releaseAll/warp every250ms. A delayed/rounded readback, simultaneous user motion or removed display can therefore cause unbounded repeated warps after logical release. NativeInput.release currently sends an unacknowledged release, while the helper receives unconditional healthy heartbeats even when the core is local. Actual failed user session is not currently running, so distinguish reproduced code defects from physical confirmation.
+
+## Contract
+
+- Native protocol5 on Mac and Windows; manual capability releaseAck:true is required before capture and inputReleased:true before confirmation. `release` and `recover` carry requestId and emit `{type:"released",requestId,ok:true}` only after capture/receive suppression ends and own pointer association/visibility are restored. Failed cleanup emits error operation release; parent falls back rather than assuming success. Windows recover uses releaseAll; no Mac-style disassociation on Windows.
+- Mac release first disables input suppression, re-associates and shows cursor; original-position warp is at most one best-effort attempt after successful association. Do not require synchronous cursor readback, do not retry positioning from watchdog, and never warp during forced recovery. Failed position restore must not prevent released acknowledgement or new free mouse movement.
+- Mac `--recover-pointer` is read-only except public pointer re-association / own visibility cleanup: no event tap, no capture, no clicks/keys and no warp. Returns `{type:"recovered",protocolVersion:5,ok:true}` on confirmed API success. Do not invoke this on the live user system during tests.
+- Heartbeat now carries `active:boolean` (parent's desired native lease, not just whether a core session is reserved) and optional `releaseRequestId`. An idle heartbeat releases stale capture/receive, may acknowledge pending release using that ID, and never repeatedly warps an idle cursor. Old omitted active retains watchdog compatibility only within correctly matching protocol.
+- Main release is an idempotent Promise barrier; activation waits it. NativeCommands adds released acknowledgement and optional supplied requestId. Track desired active and last owned child/generation so stopped or stale children cannot revive capture or stop a replacement. On missing/failed ACK, stop the old helper with bounded graceful/forced termination; on Mac use fresh --recover-pointer after exit. Disable sharing on recovery fallback, report errors, never silently return success while recovery failed.
+- Expose NativeInput.state.recovering/recoveryFailed, releaseInput():Promise<void>, recoverPointer():Promise<void>. InputAdapter.release accepts Promise<void>|void. Core releaseSession still revokes logical session immediately, but stop/stopSharing and remote stop confirmation await the release task alongside clipboard drain. Catch release failures and show actionable notice without restoring the logical session.
+- Main floating panel retains last session view during recovery, labels recovering/failed honestly and offers recovery action through same scoped stop API. Global emergency and panel/main stop recover the native pointer even when core is already local; normal edge return preserves clipboard. Force recovery cannot recapture, and app quit is bounded.
+
+## Tasks
+
+- [x] Native Mac: failing OS-seam cases for delayed/rounded readback, user motion during restore, warp failure/unreachable original point; prove old watchdog re-warps. Implement one-shot best effort, real unlock ACK and idle heartbeat recovery. Preserve manual/edge/capture behavior and check both Intel/ARM callback ABI.
+- [x] Main/Windows: pure lifecycle coordinator and tests for delayed/lost release ack, correct ID, idle-heartbeat fallback, owner generation, exit/timeout, forced recovery, activation serialization; add Windows ACK+recover/idle heartbeat and protocol5 checks. Keep all physical input mocked.
+- [x] Core/UI: async release contract and acknowledgement ordering tests, no unhandled async release errors, immediate logical stop + native recovery state. Keep floating UI visible during recovery and support repeated emergency when already local.
+- [ ] Full core/native/panel checks, packed UI and signature QA, Mac+Windows CI and new0.1.7 release. Record real hardware validation limits and observed versus inferred root cause.

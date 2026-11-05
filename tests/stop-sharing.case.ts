@@ -135,6 +135,7 @@ test("normal return preserves clipboard and stale panel or wire stops cannot aff
   assert.deepEqual(JSON.parse(response.body.toString()), {
     ok: true,
     clipboardStopped: false,
+    inputReleased: false,
   });
   assert.equal(cb.mode, "receiving");
   assert.equal(eb.snapshot().trusted[0].clipboard, true);
@@ -364,4 +365,160 @@ test("synchronous flush exceptions are reported without rejecting or retaining p
   assert.equal(ea.snapshot().trusted[0].clipboard, false);
   assert.equal(eb.snapshot().trusted[0].clipboard, false);
   assert.ok(notices.length > 0);
+});
+
+test("stop confirmation waits both native release acknowledgements after ending logical control", async (t) => {
+  const { ea, eb, ca, cb, fp } = await setup(t);
+  const local = deferred<void>(),
+    remote = deferred<void>();
+  let localCalled = false,
+    remoteCalled = false,
+    confirmed = false;
+  ca.input!.release = () => {
+    localCalled = true;
+    return local.promise;
+  };
+  cb.input!.release = () => {
+    remoteCalled = true;
+    return remote.promise;
+  };
+  await ca.start(fp, "right", 0.5, "manual");
+  const stopping = ca.stopSharing(ea.snapshot().control.id).then(() => {
+    confirmed = true;
+  });
+  try {
+    const end = Date.now() + 4000;
+    while (!remoteCalled) {
+      if (Date.now() > end) throw new Error("remote release not called");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(localCalled, true);
+    assert.equal(ca.mode, "local");
+    assert.equal(cb.mode, "local");
+    assert.equal(ea.snapshot().trusted[0].clipboard, false);
+    assert.equal(eb.snapshot().trusted[0].clipboard, false);
+    assert.equal(
+      confirmed,
+      false,
+      "UI must not confirm while native pointers have not been released",
+    );
+    local.resolve();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(confirmed, false);
+  } finally {
+    local.resolve();
+    remote.resolve();
+    await stopping;
+  }
+});
+
+test("late clipboard stop also waits an ended session's in-progress native release", async (t) => {
+  const { ea, cb, ca, fp } = await setup(t);
+  const released = deferred<void>();
+  cb.input!.release = () => released.promise;
+  await ca.start(fp, "right", 0.5, "manual");
+  const id = ea.snapshot().control.id;
+  const ending = cb.stop(false);
+  let acknowledged = false;
+  const late = ea
+    .call(fp, "/control/stop", { id, stopClipboard: true })
+    .then((response) => {
+      acknowledged = true;
+      return response;
+    });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(
+      acknowledged,
+      false,
+      "late stop cannot bypass a native recovery already in flight",
+    );
+  } finally {
+    released.resolve();
+    await ending;
+    await late;
+  }
+});
+
+test("asynchronous native release errors are observed without leaving an active session", async (t) => {
+  const { ea, ca, cb, fp } = await setup(t);
+  const notices: string[] = [];
+  ea.on("notice", (text) => notices.push(text));
+  const failed = Promise.reject(new Error("native release rejected"));
+  void failed.catch(() => {});
+  ca.input!.release = () => failed;
+  await ca.start(fp, "right", 0.5, "manual");
+  await ca.stopSharing(ea.snapshot().control.id);
+  assert.equal(ca.mode, "local");
+  assert.equal(cb.mode, "local");
+  assert.ok(
+    notices.some((x) => /恢复|释放/.test(x)),
+    "native release failure cannot be silently ignored",
+  );
+});
+
+test("an older overlapping release cannot disappear when a newer same-peer reservation is cancelled", async (t) => {
+  const { ea, eb, ca, cb, fp } = await setup(t);
+  const first = deferred<void>();
+  let calls = 0;
+  cb.input!.release = () => (calls++ === 0 ? first.promise : undefined);
+  await ca.start(fp, "right", 0.5, "manual");
+  const id = ea.snapshot().control.id;
+  const ending = cb.stop(false);
+  await new Promise((r) => setTimeout(r, 10));
+  const second = await ea.call(fp, "/control/start", {
+    id: "reservation-two",
+    side: "right",
+    y: 0.5,
+    interaction: "manual",
+  });
+  assert.equal(second.status, 200);
+  await cb.stop(false);
+  let confirmed = false;
+  const late = ea
+    .call(fp, "/control/stop", { id, stopClipboard: true })
+    .then((r) => {
+      confirmed = true;
+      return r;
+    });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(
+      confirmed,
+      false,
+      "the first release remains pending under its own session ID",
+    );
+  } finally {
+    first.resolve();
+    await ending;
+    await late;
+  }
+  assert.equal(
+    eb.snapshot().trusted[0].clipboard,
+    true,
+    "stale pause must not affect the newer session's grants",
+  );
+});
+
+test("missing native release confirmation cannot be accepted as confirmed restoration", async (t) => {
+  const { ea, ca, fp } = await setup(t),
+    notices: string[] = [];
+  ea.on("notice", (text) => notices.push(text));
+  const call = ea.call.bind(ea);
+  ea.call = async (...args: Parameters<Extensions["call"]>) => {
+    const result = await call(...args);
+    if (args[1] === "/control/stop") {
+      const body = JSON.parse(result.body.toString());
+      delete body.inputReleased;
+      return { ...result, body: Buffer.from(JSON.stringify(body)) };
+    }
+    return result;
+  };
+  await ca.start(fp, "right", 0.5, "manual");
+  await ca.stopSharing(ea.snapshot().control.id);
+  assert.ok(
+    notices.some((x) => /确认/.test(x)),
+    "an absent native ACK is unconfirmed, not successful",
+  );
 });

@@ -179,8 +179,31 @@ try {
     true,
   );
   await panel.screenshot({ path: "docs/images/control-panel.png" });
+  await app.evaluate(() => {
+    const f = (globalThis as any).panelFixture;
+    f.state.phase = "recovering";
+    f.manager.sync();
+  });
   await panel
-    .getByRole("button", { name: "停止键鼠与文本共享", exact: true })
+    .getByText("正在恢复本机键鼠", { exact: true })
+    .waitFor({ timeout: 3000 });
+  assert.equal(
+    await panel
+      .getByRole("button", { name: "停止键鼠与文本共享", exact: true })
+      .isDisabled(),
+    true,
+  );
+  await app.evaluate(() => {
+    const f = (globalThis as any).panelFixture;
+    f.state.phase = "recovery-failed";
+    f.state.error = "模拟恢复未确认";
+    f.manager.sync();
+  });
+  await panel
+    .getByText("本机输入恢复未确认", { exact: true })
+    .waitFor({ timeout: 3000 });
+  await panel
+    .getByRole("button", { name: "恢复本机鼠标", exact: true })
     .click();
   await until(() =>
     app.evaluate(() => !(globalThis as any).panelFixture.state),

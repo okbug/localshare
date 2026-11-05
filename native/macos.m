@@ -40,7 +40,7 @@ static NSMutableArray *testEvents;
 static BOOL atPoint(CGPoint a,CGPoint b){return isfinite(a.x)&&isfinite(a.y)&&fabs(a.x-b.x)<0.5&&fabs(a.y-b.y)<0.5;}
 static NSDictionary *permissionState(void) {
   BOOL accessibility=AXIsProcessTrusted(),listen=CGPreflightListenEventAccess(),postAccess=CGPreflightPostEventAccess();
-  return @{@"type":@"ready",@"protocolVersion":@4,@"permission":(accessibility&&postAccess&&fullFilter)?@YES:@NO,@"accessibility":@(accessibility),@"listen":@(listen),@"post":@(postAccess),@"capture":@(fullFilter)};
+  return @{@"type":@"ready",@"protocolVersion":@5,@"permission":(accessibility&&postAccess&&fullFilter)?@YES:@NO,@"accessibility":@(accessibility),@"listen":@(listen),@"post":@(postAccess),@"capture":@(fullFilter)};
 }
 static void emit(NSDictionary *value){if(testEvents){[testEvents addObject:value];return;}NSData *data=[NSJSONSerialization dataWithJSONObject:value options:0 error:nil];if(data){fwrite(data.bytes,1,data.length,stdout);fputc('\n',stdout);fflush(stdout);}}
 static void post(CGEventRef event){if(!event)return;CGEventSetIntegerValueField(event,kCGEventSourceUserData,marker);captureOS.postEvent(event);CFRelease(event);}
@@ -53,17 +53,35 @@ static CGEventFlags currentFlags(void){
   if([pressed containsObject:@91]||[pressed containsObject:@92])flags|=kCGEventFlagMaskCommand;
   return flags;
 }
-static BOOL releaseAll(void){
-  // Clear capture before OS calls: errors and later watchdog ticks cannot recurse.
+static BOOL freePointer(BOOL restore,BOOL force){
+  // Unlock is the success condition. Consume positioning intent even when the
+  // OS rounds/delays location updates or the user moves while release runs.
   capturing=NO;receiving=NO;manualReceive=NO;
-  if(pointerDetached&&captureOS.associate(true)==kCGErrorSuccess)pointerDetached=NO;
-  if(restorePending&&captureOS.warp(restorePoint)==kCGErrorSuccess&&atPoint(cursor(),restorePoint)&&!pointerDetached)restorePending=NO;
-  if(cursorHidden&&captureOS.show()==kCGErrorSuccess)cursorHidden=NO;
+  BOOL positionOnce=restore&&restorePending;restorePending=NO;
+  if(pointerDetached||force)pointerDetached=captureOS.associate(true)!=kCGErrorSuccess;
+  if(cursorHidden||force)cursorHidden=captureOS.show()!=kCGErrorSuccess;
+  // At most one best-effort warp, only after re-association. Never read it back
+  // and never leave an intent for a later watchdog to reposition a free cursor.
+  if(positionOnce&&!pointerDetached)(void)captureOS.warp(restorePoint);
   lastEdge=CFAbsoluteTimeGetCurrent();
+  return !pointerDetached&&!cursorHidden;
+}
+static void releaseHeldInput(void){
   for(NSNumber *key in [pressed copy]){NSNumber *code=reverseMap[key];if(code)post(CGEventCreateKeyboardEvent(source,code.unsignedShortValue,false));}
   for(NSNumber *button in [buttons copy]){int b=button.intValue;CGEventType type=b==0?kCGEventLeftMouseUp:b==1?kCGEventRightMouseUp:kCGEventOtherMouseUp;post(CGEventCreateMouseEvent(source,type,cursor(),b));}
   [pressed removeAllObjects];[buttons removeAllObjects];
-  return !pointerDetached&&!restorePending&&!cursorHidden;
+}
+static BOOL releaseAll(void){BOOL free=freePointer(YES,NO);releaseHeldInput();return free;}
+static BOOL recoverAll(void){enabled=NO;BOOL free=freePointer(NO,YES);releaseHeldInput();return free;}
+static void releaseResult(NSString *requestId,BOOL ok,BOOL acknowledge){
+  if(ok){if(acknowledge)emit(@{@"type":@"released",@"requestId":requestId?:@"",@"ok":@YES});}
+  else emit(@{@"type":@"error",@"operation":@"release",@"requestId":requestId?:@"",@"message":@"Mac 无法恢复自由鼠标，请停止共享并重新恢复本机控制。"});
+}
+static int recoverPointerCLI(void){
+  BOOL ok=freePointer(NO,YES);
+  if(ok)emit(@{@"type":@"recovered",@"protocolVersion":@5,@"ok":@YES});
+  else releaseResult(nil,NO,NO);
+  return ok?0:1;
 }
 static BOOL shutdownCleanup(void){
   // EOF and graceful termination have no later watchdog tick. Retry transient
@@ -119,7 +137,15 @@ static void command(NSDictionary *value){
     manualReceive=manual;receiving=YES;
     emit(@{@"type":@"receiving",@"requestId":value[@"requestId"]?:@""});
   }
-  else if([cmd isEqual:@"release"])releaseAll();
+  else if([cmd isEqual:@"release"]||[cmd isEqual:@"recover"]){
+    BOOL ok=[cmd isEqual:@"recover"]?recoverAll():releaseAll();releaseResult(value[@"requestId"],ok,YES);
+  }
+  else if([cmd isEqual:@"heartbeat"]&&value[@"active"]&&! [value[@"active"] boolValue]){
+    BOOL ok=YES;
+    if(capturing||receiving||pointerDetached||cursorHidden||restorePending)ok=releaseAll();
+    NSString *requestId=[value[@"releaseRequestId"] isKindOfClass:[NSString class]]?value[@"releaseRequestId"]:nil;
+    releaseResult(requestId,ok,requestId.length>0);
+  }
   else if([cmd isEqual:@"event"]&&receiving){
     NSString *type=value[@"type"];
     if([type isEqual:@"move"]){
@@ -171,20 +197,20 @@ static CGEventRef callback(CGEventTapProxy proxy,CGEventType type,CGEventRef eve
 }
 // Deterministic OS adapter: these functions never touch the user's cursor,
 // event taps, permissions, or any running LocalShare instance.
-static struct {CGPoint point;BOOL detached,hidden,permission,shiftOnAttach;int failDetach,failAttach,failHide,failShow,failWarp,ignoreWarp,warps,attaches,shows,tapEnables,posts;} fake;
+static struct {CGPoint point;BOOL detached,hidden,permission,shiftOnAttach,motionAfterWarp;int failDetach,failAttach,failHide,failShow,failWarp,ignoreWarp,warps,attaches,shows,tapEnables,posts,readbackMode;} fake;
 static const CGPoint fakeOriginal={-125.25,977.75};
-static CGPoint fakeCursor(void){return fake.point;}
+static CGPoint fakeCursor(void){if(fake.readbackMode==1)return captureAnchor;if(fake.readbackMode==2)return CGPointMake(floor(fake.point.x),floor(fake.point.y));return fake.point;}
 static CGRect fakeCaptureBounds(CGPoint point){return CGRectMake(-1440,0,1440,1080);}
 static BOOL fakePermission(void){return fake.permission;}
 static CGError fakeAssociate(boolean_t attached){if(attached){fake.attaches++;if(fake.failAttach){fake.failAttach--;return kCGErrorFailure;}}else if(fake.failDetach){fake.failDetach--;return kCGErrorFailure;}if(attached&&fake.shiftOnAttach)fake.point=CGPointMake(33,44);fake.detached=!attached;return kCGErrorSuccess;}
 static CGError fakeHide(void){if(fake.failHide){fake.failHide--;return kCGErrorFailure;}fake.hidden=YES;return kCGErrorSuccess;}
 static CGError fakeShow(void){fake.shows++;if(fake.failShow){fake.failShow--;return kCGErrorFailure;}fake.hidden=NO;return kCGErrorSuccess;}
-static CGError fakeWarp(CGPoint point){fake.warps++;if(fake.failWarp){fake.failWarp--;return kCGErrorFailure;}if(fake.ignoreWarp){fake.ignoreWarp--;return kCGErrorSuccess;}fake.point=point;return kCGErrorSuccess;}
+static CGError fakeWarp(CGPoint point){fake.warps++;if(fake.failWarp){fake.failWarp--;return kCGErrorFailure;}if(fake.ignoreWarp){fake.ignoreWarp--;return kCGErrorSuccess;}fake.point=fake.motionAfterWarp?CGPointMake(point.x+37,point.y+48):point;return kCGErrorSuccess;}
 static void fakePostEvent(CGEventRef event){fake.posts++;CGEventType type=CGEventGetType(event);if(type==kCGEventMouseMoved||type==kCGEventLeftMouseDragged||type==kCGEventRightMouseDragged||type==kCGEventOtherMouseDragged)fake.point=CGEventGetLocation(event);}
 static void fakeEnableTap(void){fake.tapEnables++;}
 static void fakeReset(void){
   memset(&fake,0,sizeof(fake));fake.point=fakeOriginal;fake.permission=YES;
-  capturing=NO;receiving=NO;manualReceive=NO;pointerDetached=NO;cursorHidden=NO;restorePending=NO;
+  capturing=NO;receiving=NO;manualReceive=NO;enabled=NO;pointerDetached=NO;cursorHidden=NO;restorePending=NO;
   [pressed removeAllObjects];[buttons removeAllObjects];testEvents=[NSMutableArray array];
 }
 static BOOL fakeRestored(void){return !capturing&&!receiving&&!fake.detached&&!fake.hidden&&!pointerDetached&&!cursorHidden&&!restorePending&&CGPointEqualToPoint(fake.point,fakeOriginal);}
@@ -220,9 +246,9 @@ static int selfTest(void) {
   synthetic=synthetic&&callback(NULL,kCGEventMouseMoved,move,NULL)==NULL&&testEvents.count==before;CFRelease(move);releaseAll();
   fakeReset();fakeCapture();fake.point=CGPointMake(1,1);fake.failWarp=1;move=fakeMove(4,5);before=testEvents.count;callback(NULL,kCGEventMouseMoved,move,NULL);CFRelease(move);
   cases[@"driftFailure"]=@(fakeRestored()&&testEvents.count==before+1&&[testEvents.lastObject[@"type"] isEqual:@"error"]);
-  fakeReset();fakeCapture();fake.failAttach=1;fake.failWarp=1;fake.failShow=1;BOOL pending=!releaseAll()&&pointerDetached&&restorePending&&cursorHidden&&!capturing;watchdogTick();cases[@"releaseRetry"]=@(pending&&fakeRestored());
-  fakeReset();fakeCapture();fake.failAttach=1;fake.shiftOnAttach=YES;releaseAll();watchdogTick();cases[@"attachFailureRestore"]=@(fakeRestored());
-  fakeReset();fakeCapture();fake.failAttach=1;fake.failWarp=1;fake.failShow=1;BOOL shutdownRestored=shutdownCleanup();cases[@"shutdownRetry"]=@(shutdownRestored&&fakeRestored());
+  fakeReset();fakeCapture();fake.failAttach=1;fake.failShow=1;BOOL pending=!releaseAll()&&pointerDetached&&!restorePending&&cursorHidden&&!capturing;warps=fake.warps;watchdogTick();cases[@"releaseRetry"]=@(pending&&!pointerDetached&&!cursorHidden&&!restorePending&&!fake.detached&&!fake.hidden&&fake.warps==warps);
+  fakeReset();fakeCapture();fake.failAttach=1;fake.shiftOnAttach=YES;releaseAll();warps=fake.warps;watchdogTick();cases[@"attachFailureUnlock"]=@(!capturing&&!pointerDetached&&!cursorHidden&&!restorePending&&!fake.detached&&!fake.hidden&&fake.warps==warps);
+  fakeReset();fakeCapture();fake.failAttach=1;fake.failShow=1;warps=fake.warps;BOOL shutdownRestored=shutdownCleanup();cases[@"shutdownRetry"]=@(shutdownRestored&&!pointerDetached&&!cursorHidden&&!restorePending&&!fake.detached&&!fake.hidden&&fake.warps==warps);
   fakeReset();fakeCapture();warps=fake.warps;move=fakeMove(5,6);callback(NULL,kCGEventMouseMoved,move,NULL);CFRelease(move);watchdogTick();cases[@"noSteadyWarp"]=@(capturing&&fake.warps==warps);releaseAll();
   fakeReset();fakeCapture();fakeCapture();BOOL recaptured=capturing&&atPoint(restorePoint,fakeOriginal);releaseAll();cases[@"repeatCapture"]=@(recaptured&&fakeRestored());
   fakeReset();fakeCapture();command(@{@"cmd":@"release"});cases[@"releaseCommand"]=@(fakeRestored());
@@ -246,14 +272,72 @@ static int selfTest(void) {
   policy[@"manualReset"]=@(receiving&&!manualReceive&&fake.warps==1&&atPoint(fake.point,CGPointMake(5,49.5)));
   command(@{@"cmd":@"event",@"type":@"move",@"dx":@-10,@"dy":@0});policy[@"edgeReceiveReturn"]=@(!receiving&&!manualReceive&&[testEvents.lastObject[@"type"] isEqual:@"return"]);
   bounds=realBounds;
+  NSMutableDictionary *liveness=[NSMutableDictionary dictionary];
+  NSArray *readbackNames=@[@"staleReadback",@"roundedReadback",@"userMotion",@"restoreWarpFailure",@"unreachableRestore"];
+  for(int mode=0;mode<5;mode++){
+    fakeReset();fakeCapture();
+    if(mode<2)fake.readbackMode=mode+1;
+    if(mode==2)fake.motionAfterWarp=YES;
+    if(mode==3)fake.failWarp=50;
+    if(mode==4)fake.ignoreWarp=50;
+    BOOL released=releaseAll();warps=fake.warps;
+    CGPoint freePoint=CGPointMake(-500,300);fake.point=freePoint;
+    for(int tick=0;tick<4;tick++)watchdogTick();
+    liveness[readbackNames[mode]]=@(released&&!capturing&&!receiving&&!pointerDetached&&!cursorHidden&&!restorePending&&!fake.detached&&!fake.hidden&&fake.warps==warps&&CGPointEqualToPoint(fake.point,freePoint));
+  }
+  fakeReset();fakeCapture();command(@{@"cmd":@"release",@"requestId":@"release-ack"});
+  NSDictionary *ack=testEvents.lastObject;
+  BOOL acknowledged=fakeRestored()&&[ack[@"type"] isEqual:@"released"]&&[ack[@"requestId"] isEqual:@"release-ack"]&&[ack[@"ok"] boolValue];
+  fake.point=CGPointMake(-400,400);warps=fake.warps;command(@{@"cmd":@"release",@"requestId":@"release-repeat"});
+  liveness[@"releaseAck"]=@(acknowledged&&fake.warps==warps&&CGPointEqualToPoint(fake.point,CGPointMake(-400,400)));
+  fakeReset();fakeCapture();fake.failAttach=1;command(@{@"cmd":@"release",@"requestId":@"release-error"});ack=testEvents.lastObject;
+  BOOL failed=!capturing&&pointerDetached&&!restorePending&&[ack[@"type"] isEqual:@"error"]&&[ack[@"operation"] isEqual:@"release"]&&[ack[@"requestId"] isEqual:@"release-error"];
+  fake.point=CGPointMake(-300,350);warps=fake.warps;command(@{@"cmd":@"heartbeat",@"active":@NO,@"releaseRequestId":@"release-error"});ack=testEvents.lastObject;
+  liveness[@"releaseError"]=@(failed&&!pointerDetached&&!cursorHidden&&fake.warps==warps&&CGPointEqualToPoint(fake.point,CGPointMake(-300,350))&&[ack[@"type"] isEqual:@"released"]&&[ack[@"requestId"] isEqual:@"release-error"]);
+  fakeReset();fakeCapture();[pressed addObject:@65];[buttons addObject:@0];warps=fake.warps;
+  command(@{@"cmd":@"recover",@"requestId":@"recover-ack"});ack=testEvents.lastObject;
+  liveness[@"recoverNoWarp"]=@(!capturing&&!receiving&&!enabled&&!pointerDetached&&!cursorHidden&&!restorePending&&!fake.detached&&!fake.hidden&&fake.warps==warps&&fake.posts==2&&pressed.count==0&&buttons.count==0&&[ack[@"type"] isEqual:@"released"]&&[ack[@"requestId"] isEqual:@"recover-ack"]&&[ack[@"ok"] boolValue]);
+  fakeReset();fakeCapture();fake.failAttach=1;fake.failShow=1;warps=fake.warps;
+  command(@{@"cmd":@"recover",@"requestId":@"recover-error"});ack=testEvents.lastObject;
+  liveness[@"recoverFailure"]=@(!capturing&&!receiving&&pointerDetached&&cursorHidden&&!restorePending&&fake.warps==warps&&[ack[@"type"] isEqual:@"error"]&&[ack[@"operation"] isEqual:@"release"]&&[ack[@"requestId"] isEqual:@"recover-error"]);
+  fakeReset();fake.detached=YES;fake.hidden=YES;[pressed addObject:@65];[buttons addObject:@0];
+  int recoveryExit=recoverPointerCLI();ack=testEvents.lastObject;
+  liveness[@"recoveryCLI"]=@(recoveryExit==0&&!fake.detached&&!fake.hidden&&!pointerDetached&&!cursorHidden&&fake.attaches==1&&fake.shows==1&&fake.warps==0&&fake.posts==0&&fake.tapEnables==0&&pressed.count==1&&buttons.count==1&&[ack[@"type"] isEqual:@"recovered"]&&[ack[@"protocolVersion"] intValue]==5&&[ack[@"ok"] boolValue]);
+  fakeReset();fake.failAttach=1;fake.failShow=1;recoveryExit=recoverPointerCLI();ack=testEvents.lastObject;
+  liveness[@"recoveryCLIFailure"]=@(recoveryExit==1&&fake.warps==0&&fake.posts==0&&fake.tapEnables==0&&[ack[@"type"] isEqual:@"error"]&&[ack[@"operation"] isEqual:@"release"]);
+  fakeReset();fakeCapture();command(@{@"cmd":@"heartbeat",@"active":@NO,@"releaseRequestId":@"idle-release"});ack=testEvents.lastObject;
+  acknowledged=fakeRestored()&&[ack[@"type"] isEqual:@"released"]&&[ack[@"requestId"] isEqual:@"idle-release"]&&[ack[@"ok"] boolValue];
+  CGPoint freePoint=CGPointMake(-600,330);fake.point=freePoint;warps=fake.warps;
+  for(int tick=0;tick<12;tick++){command(@{@"cmd":@"heartbeat",@"active":@NO});watchdogTick();}
+  liveness[@"idleHeartbeat"]=@(acknowledged&&fake.warps==warps&&CGPointEqualToPoint(fake.point,freePoint)&&!capturing&&!receiving);
+  fakeReset();command(@{@"cmd":@"receive",@"manual":@YES});command(@{@"cmd":@"heartbeat",@"active":@NO,@"releaseRequestId":@"idle-receive"});ack=testEvents.lastObject;
+  liveness[@"idleHeartbeatReceive"]=@(fakeRestored()&&!manualReceive&&fake.warps==0&&[ack[@"type"] isEqual:@"released"]&&[ack[@"requestId"] isEqual:@"idle-receive"]);
+  fakeReset();fakeCapture();warps=fake.warps;command(@{@"cmd":@"heartbeat"});command(@{@"cmd":@"heartbeat",@"active":@YES});
+  liveness[@"omittedHeartbeat"]=@(capturing&&pointerDetached&&cursorHidden&&fake.warps==warps);releaseAll();
+  fakeReset();fakeCapture();fake.readbackMode=1;fake.failWarp=50;warps=fake.warps;BOOL shutdownFree=shutdownCleanup();
+  fake.point=freePoint;for(int tick=0;tick<4;tick++)watchdogTick();
+  liveness[@"shutdownNoWarp"]=@(shutdownFree&&!restorePending&&!pointerDetached&&!cursorHidden&&fake.warps==warps+1&&CGPointEqualToPoint(fake.point,freePoint));
+  fakeReset();fakeCapture();fake.failAttach=50;fake.failShow=50;warps=fake.warps;shutdownFree=shutdownCleanup();ack=testEvents.lastObject;
+  liveness[@"shutdownBounded"]=@(!shutdownFree&&!capturing&&!receiving&&!restorePending&&fake.attaches==3&&fake.shows==3&&fake.warps==warps&&[ack[@"type"] isEqual:@"error"]&&[ack[@"operation"] isEqual:@"release"]);
+  fakeReset();fakeCapture();fake.failShow=1;command(@{@"cmd":@"release",@"requestId":@"show-failure"});ack=testEvents.lastObject;
+  failed=!capturing&&!pointerDetached&&cursorHidden&&!restorePending&&[ack[@"type"] isEqual:@"error"]&&[ack[@"operation"] isEqual:@"release"];
+  warps=fake.warps;fake.point=freePoint;command(@{@"cmd":@"heartbeat",@"active":@NO,@"releaseRequestId":@"show-failure"});ack=testEvents.lastObject;
+  liveness[@"showFailureAck"]=@(failed&&!cursorHidden&&fake.warps==warps&&CGPointEqualToPoint(fake.point,freePoint)&&[ack[@"type"] isEqual:@"released"]&&[ack[@"requestId"] isEqual:@"show-failure"]);
+  fakeReset();enabled=YES;allowRight=YES;lastEdge=CFAbsoluteTimeGetCurrent()-2;command(@{@"cmd":@"heartbeat",@"active":@NO});
+  move=fakeMove(1,0);CGEventSetLocation(move,CGPointMake(CGRectGetMaxX(bounds)-1,CGRectGetMidY(bounds)));callback(NULL,kCGEventMouseMoved,move,NULL);CFRelease(move);
+  liveness[@"idleEdgeLiveness"]=@([testEvents.lastObject[@"type"] isEqual:@"edge"]&&[testEvents.lastObject[@"side"] isEqual:@"right"]&&fake.warps==0);
   BOOL passed=suppressed&&deltas&&synthetic;for(NSString *name in [cases.allKeys copy]){BOOL result=[cases[name] boolValue];passed=passed&&result;cases[name]=result?@YES:@NO;}
   for(NSString *name in [policy.allKeys copy]){BOOL result=[policy[name] boolValue];passed=passed&&result;policy[name]=result?@YES:@NO;}
-  testEvents=nil;emit(@{@"type":@"self-test",@"receivePolicy":policy,@"suppressed":@(suppressed),@"hardwareDeltasPreserved":@(deltas),@"syntheticSuppressed":@(synthetic),@"lifecycle":cases});return passed?0:1;
+  for(NSString *name in [liveness.allKeys copy]){BOOL result=[liveness[name] boolValue];passed=passed&&result;liveness[name]=result?@YES:@NO;}
+  testEvents=nil;emit(@{@"type":@"self-test",@"releaseLiveness":liveness,@"receivePolicy":policy,@"suppressed":@(suppressed),@"hardwareDeltasPreserved":@(deltas),@"syntheticSuppressed":@(synthetic),@"lifecycle":cases});return passed?0:1;
 }
 int main(int argc,const char **argv){@autoreleasepool{
   signal(SIGPIPE,SIG_IGN);
   BOOL check=argc>1&&strcmp(argv[1],"--check")==0,request=argc>1&&strcmp(argv[1],"--request")==0,test=argc>1&&strcmp(argv[1],"--self-test")==0;
-  if(argc>1&&!check&&!request&&!test)return 2;
+  BOOL recover=argc>1&&strcmp(argv[1],"--recover-pointer")==0;
+  if(argc>1&&!check&&!request&&!test&&!recover)return 2;
+  // Before source/tap/key-map setup: no cursor move or injected input in CLI recovery.
+  if(recover)return recoverPointerCLI();
   if(request){AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge NSString *)kAXTrustedCheckOptionPrompt:@YES});if(!CGPreflightListenEventAccess())CGRequestListenEventAccess();if(!CGPreflightPostEventAccess())CGRequestPostEventAccess();}
   keyMap=@{@0:@65,@1:@83,@2:@68,@3:@70,@4:@72,@5:@71,@6:@90,@7:@88,@8:@67,@9:@86,@11:@66,@12:@81,@13:@87,@14:@69,@15:@82,@16:@89,@17:@84,@18:@49,@19:@50,@20:@51,@21:@52,@22:@54,@23:@53,@24:@187,@25:@57,@26:@55,@27:@189,@28:@56,@29:@48,@30:@221,@31:@79,@32:@85,@33:@219,@34:@73,@35:@80,@36:@13,@37:@76,@38:@74,@39:@222,@40:@75,@41:@186,@42:@220,@43:@188,@44:@191,@45:@78,@46:@77,@47:@190,@48:@9,@49:@32,@50:@192,@51:@8,@53:@27,@54:@92,@55:@91,@56:@160,@57:@20,@58:@164,@59:@162,@60:@161,@61:@165,@62:@163,@65:@110,@67:@106,@69:@107,@71:@144,@75:@111,@76:@13,@78:@109,@81:@187,@82:@96,@83:@97,@84:@98,@85:@99,@86:@100,@87:@101,@88:@102,@89:@103,@91:@104,@92:@105,@96:@116,@97:@117,@98:@118,@99:@114,@100:@119,@101:@120,@103:@122,@109:@121,@111:@123,@114:@45,@115:@36,@116:@33,@117:@46,@118:@115,@119:@35,@120:@113,@121:@34,@122:@112,@123:@37,@124:@39,@125:@40,@126:@38};
   NSMutableDictionary *reverse=[NSMutableDictionary dictionary];for(NSNumber *mac in keyMap)reverse[keyMap[mac]]=mac;reverse[@13]=@36;reverseMap=[reverse copy];

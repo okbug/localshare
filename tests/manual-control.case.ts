@@ -87,7 +87,7 @@ test("manual input control advertises authorization, ignores edge placement and 
     JSON.parse(
       (await ea.call(fp, "/control/capabilities", {})).body.toString(),
     ),
-    { version: 1, manual: true, stopSharing: true },
+    { version: 1, manual: true, stopSharing: true, releaseAck: true },
   );
   await ea.setPeer(fp, { side: "left", entryDisplay: "REMOVED" });
   await ca.start(fp, "right", 0.5, "manual");
@@ -126,6 +126,7 @@ test("manual capability failure rejects an old peer before capturing local input
     { version: 1, manual: true, stopSharing: "true" },
     { version: 1, manual: false },
     { version: 1, manual: "true" },
+    { version: 1, manual: true, stopSharing: true },
     { version: 2, manual: true },
   ]) {
     eb.controlHandler = async (req, res, url, peer) => {

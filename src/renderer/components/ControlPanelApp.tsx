@@ -41,37 +41,57 @@ export default function ControlPanelApp() {
       setStopping(false);
     }
   };
+  const recovering = state?.phase === "recovering",
+    failed = state?.phase === "recovery-failed";
   return (
     <main className="control-overlay" aria-label="键鼠共享悬浮窗口">
       <div className="control-overlay-row">
         <div className="control-overlay-heading" title={state?.peer}>
           <span className="connection-dot" />
           <strong>
-            {state
-              ? state.direction === "sending"
-                ? `正在控制 ${state.peer}`
-                : `${state.peer} 正在控制本机`
-              : "当前未在共享"}
+            {recovering
+              ? "正在恢复本机键鼠"
+              : failed
+                ? "本机输入恢复未确认"
+                : state
+                  ? state.direction === "sending"
+                    ? `正在控制 ${state.peer}`
+                    : `${state.peer} 正在控制本机`
+                  : "当前未在共享"}
           </strong>
         </div>
         <button
           className="control-overlay-stop"
-          aria-label="停止键鼠与文本共享"
-          disabled={!state || stopping}
+          aria-label={failed ? "恢复本机鼠标" : "停止键鼠与文本共享"}
+          disabled={!state || stopping || recovering}
           onClick={() => void stop()}
         >
-          {stopping ? "正在停止…" : "停止共享"}
+          {recovering
+            ? "恢复中…"
+            : stopping
+              ? "处理中…"
+              : failed
+                ? "恢复鼠标"
+                : "停止共享"}
         </button>
       </div>
       <div className="control-overlay-row control-overlay-details">
-        <span>本机文本同步：{state?.clipboard ? "开启" : "关闭"}</span>
+        <span>
+          {recovering || failed
+            ? "键鼠转发已停止"
+            : `本机文本同步：${state?.clipboard ? "开启" : "关闭"}`}
+        </span>
         {state ? <kbd>{state.shortcut}</kbd> : null}
       </div>
       <p className="control-overlay-hint" role="status">
         {error ||
-          (state?.direction === "sending"
-            ? "本机鼠标已接管，可在对方屏幕点击停止，或使用上述快捷键。"
-            : "点击停止或按快捷键，结束键鼠接管并暂停此设备的文本同步。")}
+          (recovering
+            ? "正在等待底层解除锁定，请稍候。"
+            : failed
+              ? "按快捷键或点击恢复鼠标重试；必要时完全退出应用。"
+              : state?.direction === "sending"
+                ? "本机鼠标已接管，可在对方屏幕点击停止，或使用上述快捷键。"
+                : "点击停止或按快捷键，结束键鼠接管并暂停此设备的文本同步。")}
       </p>
     </main>
   );
