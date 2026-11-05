@@ -6,7 +6,7 @@ Electron + Bun 的局域网共享桌面应用。中文界面，面向 macOS 与 
 
 [下载安装包](https://github.com/okbug/localshare/releases) · [源码仓库](https://github.com/okbug/localshare)
 
-**0.1.3 新增可选的滚轮反转与 Alt / Win 交换。** 在「设备协同 → 已配对设备」的卡片中按需开启，默认均关闭。此版本包含 0.1.2 的点击、按键和连接修复；键鼠共享两端至少使用 0.1.2，新设置须在发起控制的一端升级到 0.1.3。
+**0.1.4 新增 Windows 多屏支持和 Mac 光标居中固定。** 请将两端都升级到 0.1.4，完全退出旧版后重新打开。Windows 按系统显示器排列移动，内部屏幕接缝不再返回 Mac；Mac 跨屏后光标居中锁定并隐藏，返回时恢复原位置。保留 0.1.3 的可选滚轮反转与 Alt / Win 交换。
 
 **Mac 用户请使用 0.1.1 或更新版本。** 0.1.0 的 Mac 包资源签名不完整，会触发“已损坏，无法打开”；0.1.1 修复应用与原生模块签名，并增加 ZIP 解压后的严格校验。
 
@@ -18,9 +18,9 @@ Electron + Bun 的局域网共享桌面应用。中文界面，面向 macOS 与 
 - 接收确认 / 拒绝、传输进度、取消、历史、接收位置设置、后台托盘。
 - HTTPS 流式传输、持久化证书、传输前核对证书指纹、会话令牌、SHA-256 验证、同名文件不覆盖。
 - 双端确认配对、文本剪贴板同步（最多 1 MiB、防回环、不记录正文）、撤销信任。
-- 实验性跨屏键鼠：相邻设备位于主屏左侧或右侧、鼠标回穿、事件顺序、心跳断线恢复、`Ctrl + Alt + Esc` 紧急退出。
+- 实验性跨屏键鼠：Windows 多显示器按系统排列移动、自动或指定入口屏幕、排列预览、Mac 居中固定并恢复位置、事件顺序、心跳断线恢复、`Ctrl + Alt + Esc` 紧急退出。
 
-基础传输实现 LocalSend v2 上传接口；没有宣称涵盖官方所有功能。网页下载分享、断点续传、空目录、自动接收、图片/文件剪贴板、多显示器和跨设备文件拖拽不属于当前版本。LocalSend 客户端无需安装 LocalShare 即可使用基础传输协议；剪贴板和键鼠扩展需要双方安装 LocalShare。官方客户端互通尚待实机验证。
+基础传输实现 LocalSend v2 上传接口；没有宣称涵盖官方所有功能。网页下载分享、断点续传、空目录、自动接收、图片/文件剪贴板、Mac 多显示器间的跨设备入口及跨设备文件拖拽不属于当前版本。LocalSend 客户端无需安装 LocalShare 即可使用基础传输协议；剪贴板和键鼠扩展需要双方安装 LocalShare。官方客户端互通尚待实机验证。
 
 ## 开发与运行
 
@@ -74,6 +74,20 @@ bun run start
 
 修饰键按当前物理键位映射：Mac 的 Control → Windows Ctrl、Option → Alt、Command → Windows 键。在 Windows 中复制/粘贴请使用 Mac 键盘的 Control+C / Control+V；反向操作 Mac 时，Windows 键对应 Command。不同布局及输入法仍需实测。
 
+### Windows 多屏与 Mac 光标固定（0.1.4）
+
+Windows 的屏幕位置直接跟随「设置 → 系统 → 显示」。支持副屏在左、右、上、下以及错位、竖屏和负坐标；屏幕间的实际相接区域可以穿越，空白区域不会被当成屏幕。复制模式重合的显示区域按一个桌面区域处理。Windows 需要支持 Per-Monitor V2 的 Windows 10 1703 或更新版本。
+
+例如排列为 `Mac | Windows 副屏 | Windows 主屏`：从 Mac 向右进入副屏，继续向右进入主屏；从主屏向左先回副屏，继续越过副屏最左侧才返回 Mac。
+
+在 **Mac → 设备协同 → Windows 设备卡片 → 屏幕排列与入口** 可预览排列。默认「自动」从靠近 Mac 一侧的有效外边缘进入；也可选择具有可用入口边缘的屏幕。修改在下次跨屏生效；选中的屏幕被拔掉或其入口被别的屏幕完全挡住后，刷新会恢复自动。读取布局失败时可点「恢复自动入口」，避免旧选项阻止连接。
+
+![多屏排列预览（合成测试数据）](docs/images/display-layout.png)
+
+显示器插拔、排列或分辨率改变时，正在进行的控制会先结束并释放按键；重新跨屏使用新布局。Windows 自有屏幕的上下排列可用；跨电脑摆放目前仍配置左/右。
+
+Mac 控制 Windows 时，保存跨出时的位置，在当前屏幕中央固定并隐藏本机光标；检测到偏移时纠正，纠正失败就结束共享。正常返回、紧急退出、断线、超时和正常退出都会尝试恢复原位置。实际前后台切换、混合缩放手感和不同驱动仍需物理双机验证。
+
 ### 滚轮方向与 Alt / Win 交换（0.1.3）
 
 在**发起控制的电脑**上打开「设备协同 → 已配对设备 → 对方设备卡片 → 控制此设备时的输入偏好」。两个开关独立设置，默认关闭，按设备保存，重启后保留。
@@ -124,7 +138,7 @@ bun run dist:win
 
 输出位于 `release/`。macOS 输出应用 ZIP，Windows 输出安装版与便携 EXE。原生 helper 是独立可执行文件，随安装包携带。
 
-本次已在 Mac 上产出 macOS arm64 ZIP、Windows x64 安装 EXE 和便携 EXE。Windows 输入模块使用官方 Zig 交叉编译（SHA-256 校验下载）；这验证了编译和打包，还没有验证 Windows 实际运行。Mac 上需要复现交叉构建时，先运行 `bun run native:win:cross`，再运行 `bunx electron-builder --win --x64 -c.win.signExecutable=false`；正常 Windows 原生构建仍推荐上面的 `dist:win`。
+发布流程在 macOS 和 Windows 上分别构建安装包并运行原生自检；自检不向用户桌面注入输入。Mac 上也可用官方 Zig 交叉编译（SHA-256 校验下载）：先运行 `bun run native:win:cross`，再运行 `bunx electron-builder --win --x64 -c.win.signExecutable=false`。编译和自检通过不等于已完成真实 Windows 多屏鼠标操作验证。
 
 GitHub Actions 包含 macOS arm64 / x64、Windows x64 原生构建任务，可手动触发或推送版本标签后构建。当前 Mac 预览版使用 ad-hoc 签名，尚未获得 Developer ID 发行签名与 Apple 公证；正式分发前应配置开发者证书。预览版安装包在本仓库的 [Releases](https://github.com/okbug/localshare/releases) 中提供。
 
@@ -137,6 +151,7 @@ bun test
 bun run typecheck
 bun run build
 bun run smoke
+bun run smoke:displays
 bun run verify:mac
 # 校验实际 ZIP 的解压结果：
 bun run verify:mac release/LocalShare-0.1.1-arm64-mac.zip

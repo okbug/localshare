@@ -2,6 +2,7 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <dispatch/dispatch.h>
 #import <unistd.h>
+#import <signal.h>
 
 static const int64_t marker = 0x4c5348415245;
 static BOOL capturing=NO, receiving=NO, enabled=NO, allowLeft=NO, allowRight=NO, returnLeft=YES;
@@ -11,15 +12,37 @@ static CFMachPortRef eventTap;
 static CGEventSourceRef source;
 static NSMutableSet<NSNumber *> *pressed,*buttons;
 static NSDictionary<NSNumber *,NSNumber *> *keyMap,*reverseMap;
-static BOOL fullFilter=NO, cursorHidden=NO, pointerDetached=NO, selfTesting=NO;
-static CGPoint capturePoint;
+static BOOL fullFilter=NO, cursorHidden=NO, pointerDetached=NO, restorePending=NO;
+static CGPoint restorePoint, captureAnchor;
+// All cursor side effects go through this seam. Self-tests replace it before
+// exercising the same command/callback/watchdog paths used by the app.
+static CGPoint realCursor(void){CGEventRef event=CGEventCreate(NULL);if(!event)return CGPointMake(NAN,NAN);CGPoint point=CGEventGetLocation(event);CFRelease(event);return point;}
+static CGRect realCaptureBounds(CGPoint point){CGDirectDisplayID display=0;uint32_t count=0;if(CGGetDisplaysWithPoint(point,1,&display,&count)!=kCGErrorSuccess||count==0)return CGRectZero;return CGDisplayBounds(display);}
+static BOOL realCapturePermission(void){return AXIsProcessTrusted()&&CGPreflightPostEventAccess()&&fullFilter&&eventTap&&CGEventTapIsEnabled(eventTap);}
+static CGError realHide(void){return CGDisplayHideCursor(CGMainDisplayID());}
+static CGError realShow(void){return CGDisplayShowCursor(CGMainDisplayID());}
+static void realPostEvent(CGEventRef event){CGEventPost(kCGHIDEventTap,event);}
+static void realEnableTap(void){if(eventTap)CGEventTapEnable(eventTap,true);}
+static struct {
+  CGPoint (*cursor)(void);
+  CGRect (*captureBounds)(CGPoint);
+  BOOL (*permission)(void);
+  CGError (*associate)(boolean_t);
+  CGError (*hide)(void);
+  CGError (*show)(void);
+  CGError (*warp)(CGPoint);
+  void (*enableTap)(void);
+  void (*postEvent)(CGEventRef);
+} captureOS={realCursor,realCaptureBounds,realCapturePermission,CGAssociateMouseAndMouseCursorPosition,realHide,realShow,CGWarpMouseCursorPosition,realEnableTap,realPostEvent};
+static NSMutableArray *testEvents;
+static BOOL atPoint(CGPoint a,CGPoint b){return isfinite(a.x)&&isfinite(a.y)&&fabs(a.x-b.x)<0.5&&fabs(a.y-b.y)<0.5;}
 static NSDictionary *permissionState(void) {
   BOOL accessibility=AXIsProcessTrusted(),listen=CGPreflightListenEventAccess(),postAccess=CGPreflightPostEventAccess();
-  return @{@"type":@"ready",@"protocolVersion":@2,@"permission":(accessibility&&postAccess&&fullFilter)?@YES:@NO,@"accessibility":@(accessibility),@"listen":@(listen),@"post":@(postAccess),@"capture":@(fullFilter)};
+  return @{@"type":@"ready",@"protocolVersion":@3,@"permission":(accessibility&&postAccess&&fullFilter)?@YES:@NO,@"accessibility":@(accessibility),@"listen":@(listen),@"post":@(postAccess),@"capture":@(fullFilter)};
 }
-static void emit(NSDictionary *value){NSData *data=[NSJSONSerialization dataWithJSONObject:value options:0 error:nil];if(data){fwrite(data.bytes,1,data.length,stdout);fputc('\n',stdout);fflush(stdout);}}
-static void post(CGEventRef event){if(!event)return;CGEventSetIntegerValueField(event,kCGEventSourceUserData,marker);CGEventPost(kCGHIDEventTap,event);CFRelease(event);}
-static CGPoint cursor(void){CGEventRef event=CGEventCreate(NULL);CGPoint point=CGEventGetLocation(event);CFRelease(event);return point;}
+static void emit(NSDictionary *value){if(testEvents){[testEvents addObject:value];return;}NSData *data=[NSJSONSerialization dataWithJSONObject:value options:0 error:nil];if(data){fwrite(data.bytes,1,data.length,stdout);fputc('\n',stdout);fflush(stdout);}}
+static void post(CGEventRef event){if(!event)return;CGEventSetIntegerValueField(event,kCGEventSourceUserData,marker);captureOS.postEvent(event);CFRelease(event);}
+static CGPoint cursor(void){return captureOS.cursor();}
 static CGEventFlags currentFlags(void){
   CGEventFlags flags=0;
   if([pressed containsObject:@160]||[pressed containsObject:@161])flags|=kCGEventFlagMaskShift;
@@ -28,32 +51,57 @@ static CGEventFlags currentFlags(void){
   if([pressed containsObject:@91]||[pressed containsObject:@92])flags|=kCGEventFlagMaskCommand;
   return flags;
 }
-static void releaseAll(void){
-  BOOL wasCapturing=capturing;capturing=NO;receiving=NO;
-  if(pointerDetached){CGAssociateMouseAndMouseCursorPosition(true);pointerDetached=NO;}
-  if(cursorHidden){CGDisplayShowCursor(CGMainDisplayID());cursorHidden=NO;}
-  if(wasCapturing&&!selfTesting)CGWarpMouseCursorPosition(capturePoint);
+static BOOL releaseAll(void){
+  // Clear capture before OS calls: errors and later watchdog ticks cannot recurse.
+  capturing=NO;receiving=NO;
+  if(pointerDetached&&captureOS.associate(true)==kCGErrorSuccess)pointerDetached=NO;
+  if(restorePending&&captureOS.warp(restorePoint)==kCGErrorSuccess&&atPoint(cursor(),restorePoint)&&!pointerDetached)restorePending=NO;
+  if(cursorHidden&&captureOS.show()==kCGErrorSuccess)cursorHidden=NO;
   lastEdge=CFAbsoluteTimeGetCurrent();
   for(NSNumber *key in [pressed copy]){NSNumber *code=reverseMap[key];if(code)post(CGEventCreateKeyboardEvent(source,code.unsignedShortValue,false));}
   for(NSNumber *button in [buttons copy]){int b=button.intValue;CGEventType type=b==0?kCGEventLeftMouseUp:b==1?kCGEventRightMouseUp:kCGEventOtherMouseUp;post(CGEventCreateMouseEvent(source,type,cursor(),b));}
   [pressed removeAllObjects];[buttons removeAllObjects];
+  return !pointerDetached&&!restorePending&&!cursorHidden;
+}
+static BOOL shutdownCleanup(void){
+  // EOF and graceful termination have no later watchdog tick. Retry transient
+  // cursor API failures before exiting; forced termination remains OS-owned.
+  for(int attempt=0;attempt<3;attempt++)if(releaseAll())return YES;
+  emit(@{@"type":@"error",@"operation":@"release",@"message":@"Mac 无法完整恢复本机光标，已停止跨屏控制。"});return NO;
+}
+static void captureFailure(NSString *message){releaseAll();emit(@{@"type":@"error",@"operation":@"capture",@"message":message});}
+static BOOL keepCaptureAnchored(void){
+  if(!capturing)return YES;
+  if(atPoint(cursor(),captureAnchor))return YES;
+  // The public CGWarp API explicitly generates no input events. Never derive
+  // remote deltas from this warp or from absolute coordinates: HID deltas survive.
+  if(captureOS.warp(captureAnchor)==kCGErrorSuccess&&atPoint(cursor(),captureAnchor))return YES;
+  captureFailure(@"Mac 无法保持本机光标居中，已取消跨屏控制。");return NO;
+}
+static void watchdogTick(void){
+  if((capturing||receiving)&&CFAbsoluteTimeGetCurrent()-lastCommand>2){releaseAll();emit(@{@"type":@"emergency"});}
+  else if(capturing)keepCaptureAnchored();
+  else if(pointerDetached||restorePending||cursorHidden)releaseAll();
 }
 static void command(NSDictionary *value){
   lastCommand=CFAbsoluteTimeGetCurrent();NSString *cmd=value[@"cmd"];
   if([cmd isEqual:@"enable"]){enabled=YES;allowLeft=[value[@"left"] boolValue];allowRight=[value[@"right"] boolValue];}
   else if([cmd isEqual:@"disable"]){enabled=NO;releaseAll();}
   else if([cmd isEqual:@"capture"]){
-    releaseAll();
-    if(![permissionState()[@"permission"] boolValue]||!CGEventTapIsEnabled(eventTap)){emit(@{@"type":@"error",@"operation":@"capture",@"message":@"Mac 无法完整截获键盘和鼠标，请检查辅助功能及输入监控权限并重新开启共享。"});return;}
-    capturePoint=cursor();capturePoint.x=fmin(CGRectGetMaxX(bounds)-3,fmax(CGRectGetMinX(bounds)+3,capturePoint.x));
-    CGError lock=CGAssociateMouseAndMouseCursorPosition(false);
-    if(lock!=kCGErrorSuccess){emit(@{@"type":@"error",@"operation":@"capture",@"message":@"Mac 无法锁定本机光标，已取消跨屏控制。"});return;}
-    pointerDetached=YES;
-    if(CGDisplayHideCursor(CGMainDisplayID())!=kCGErrorSuccess){releaseAll();emit(@{@"type":@"error",@"operation":@"capture",@"message":@"Mac 无法隐藏本机光标，已取消跨屏控制。"});return;}
-    cursorHidden=YES;capturing=YES;CGWarpMouseCursorPosition(capturePoint);emit(@{@"type":@"captured",@"requestId":value[@"requestId"]?:@""});
+    if(!releaseAll()){emit(@{@"type":@"error",@"operation":@"capture",@"message":@"Mac 光标恢复尚未完成，已取消跨屏控制。"});return;}
+    if(!captureOS.permission()){emit(@{@"type":@"error",@"operation":@"capture",@"message":@"Mac 无法完整截获键盘和鼠标，请检查辅助功能及输入监控权限并重新开启共享。"});return;}
+    restorePoint=cursor();CGRect captureBounds=captureOS.captureBounds(restorePoint);
+    if(!isfinite(restorePoint.x)||!isfinite(restorePoint.y)||CGRectIsEmpty(captureBounds)){emit(@{@"type":@"error",@"operation":@"capture",@"message":@"Mac 无法读取本机光标位置，已取消跨屏控制。"});return;}
+    captureAnchor=CGPointMake(CGRectGetMidX(captureBounds),CGRectGetMidY(captureBounds));
+    if(captureOS.associate(false)!=kCGErrorSuccess){emit(@{@"type":@"error",@"operation":@"capture",@"message":@"Mac 无法锁定本机光标，已取消跨屏控制。"});return;}
+    pointerDetached=YES;restorePending=YES;
+    if(captureOS.hide()!=kCGErrorSuccess){captureFailure(@"Mac 无法隐藏本机光标，已取消跨屏控制。");return;}
+    cursorHidden=YES;
+    if(captureOS.warp(captureAnchor)!=kCGErrorSuccess||!atPoint(cursor(),captureAnchor)){captureFailure(@"Mac 无法将本机光标居中，已取消跨屏控制。");return;}
+    capturing=YES;emit(@{@"type":@"captured",@"requestId":value[@"requestId"]?:@""});
   }
   else if([cmd isEqual:@"receive"]){
-    releaseAll();
+    if(!releaseAll()){emit(@{@"type":@"error",@"operation":@"receive",@"message":@"Mac 光标恢复尚未完成，已取消跨屏控制。"});return;}
     if(!CGPreflightPostEventAccess()){emit(@{@"type":@"error",@"operation":@"receive",@"message":@"Mac 没有输入控制权限，请在辅助功能中允许 LocalShare。"});return;}
     receiving=YES;returnLeft=[value[@"side"] isEqual:@"right"];double y=fmin(1,fmax(0,[value[@"y"] doubleValue]));
     CGError moved=CGWarpMouseCursorPosition(CGPointMake(returnLeft?CGRectGetMinX(bounds)+5:CGRectGetMaxX(bounds)-5,CGRectGetMinY(bounds)+y*(bounds.size.height-1)));
@@ -80,13 +128,14 @@ static void command(NSDictionary *value){
   }
 }
 static CGEventRef callback(CGEventTapProxy proxy,CGEventType type,CGEventRef event,void *context){
-  if(type==kCGEventTapDisabledByTimeout||type==kCGEventTapDisabledByUserInput){releaseAll();emit(@{@"type":@"emergency"});CGEventTapEnable(eventTap,true);return event;}
-  if(CGEventGetIntegerValueField(event,kCGEventSourceUserData)==marker)return event;
+  if(type==kCGEventTapDisabledByTimeout||type==kCGEventTapDisabledByUserInput){releaseAll();emit(@{@"type":@"emergency"});captureOS.enableTap();return event;}
+  if(CGEventGetIntegerValueField(event,kCGEventSourceUserData)==marker||CGEventGetIntegerValueField(event,kCGEventSourceUnixProcessID)==getpid())return capturing?NULL:event;
   int code=(int)CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode);CGEventFlags flags=CGEventGetFlags(event);
   if(type==kCGEventKeyDown&&code==53&&(flags&kCGEventFlagMaskControl)&&(flags&kCGEventFlagMaskAlternate)){releaseAll();emit(@{@"type":@"emergency"});return NULL;}
   if(capturing){
     switch(type){
       case kCGEventMouseMoved:case kCGEventLeftMouseDragged:case kCGEventRightMouseDragged:case kCGEventOtherMouseDragged:
+        if(!keepCaptureAnchored())return NULL;
         emit(@{@"type":@"move",@"dx":@(CGEventGetDoubleValueField(event,kCGMouseEventDeltaX)),@"dy":@(CGEventGetDoubleValueField(event,kCGMouseEventDeltaY))});
         break;
       case kCGEventKeyDown:case kCGEventKeyUp:
@@ -109,17 +158,70 @@ static CGEventRef callback(CGEventTapProxy proxy,CGEventType type,CGEventRef eve
   }
   return event;
 }
+// Deterministic OS adapter: these functions never touch the user's cursor,
+// event taps, permissions, or any running LocalShare instance.
+static struct {CGPoint point;BOOL detached,hidden,permission,shiftOnAttach;int failDetach,failAttach,failHide,failShow,failWarp,ignoreWarp,warps,attaches,shows,tapEnables,posts;} fake;
+static const CGPoint fakeOriginal={-125.25,977.75};
+static CGPoint fakeCursor(void){return fake.point;}
+static CGRect fakeCaptureBounds(CGPoint point){return CGRectMake(-1440,0,1440,1080);}
+static BOOL fakePermission(void){return fake.permission;}
+static CGError fakeAssociate(boolean_t attached){if(attached){fake.attaches++;if(fake.failAttach){fake.failAttach--;return kCGErrorFailure;}}else if(fake.failDetach){fake.failDetach--;return kCGErrorFailure;}if(attached&&fake.shiftOnAttach)fake.point=CGPointMake(33,44);fake.detached=!attached;return kCGErrorSuccess;}
+static CGError fakeHide(void){if(fake.failHide){fake.failHide--;return kCGErrorFailure;}fake.hidden=YES;return kCGErrorSuccess;}
+static CGError fakeShow(void){fake.shows++;if(fake.failShow){fake.failShow--;return kCGErrorFailure;}fake.hidden=NO;return kCGErrorSuccess;}
+static CGError fakeWarp(CGPoint point){fake.warps++;if(fake.failWarp){fake.failWarp--;return kCGErrorFailure;}if(fake.ignoreWarp){fake.ignoreWarp--;return kCGErrorSuccess;}fake.point=point;return kCGErrorSuccess;}
+static void fakePostEvent(CGEventRef event){fake.posts++;}
+static void fakeEnableTap(void){fake.tapEnables++;}
+static void fakeReset(void){
+  memset(&fake,0,sizeof(fake));fake.point=fakeOriginal;fake.permission=YES;
+  capturing=NO;receiving=NO;pointerDetached=NO;cursorHidden=NO;restorePending=NO;
+  [pressed removeAllObjects];[buttons removeAllObjects];testEvents=[NSMutableArray array];
+}
+static BOOL fakeRestored(void){return !capturing&&!receiving&&!fake.detached&&!fake.hidden&&!pointerDetached&&!cursorHidden&&!restorePending&&CGPointEqualToPoint(fake.point,fakeOriginal);}
+static void fakeCapture(void){command(@{@"cmd":@"capture",@"requestId":@"self-test"});}
+static CGEventRef fakeMove(double dx,double dy){CGEventRef event=CGEventCreateMouseEvent(source,kCGEventMouseMoved,captureAnchor,kCGMouseButtonLeft);CGEventSetIntegerValueField(event,kCGEventSourceUnixProcessID,0);CGEventSetDoubleValueField(event,kCGMouseEventDeltaX,dx);CGEventSetDoubleValueField(event,kCGMouseEventDeltaY,dy);return event;}
 static int selfTest(void) {
-  selfTesting=YES;capturing=YES;BOOL suppressed=YES;
+  captureOS.cursor=fakeCursor;captureOS.captureBounds=fakeCaptureBounds;captureOS.permission=fakePermission;
+  captureOS.associate=fakeAssociate;captureOS.hide=fakeHide;captureOS.show=fakeShow;captureOS.warp=fakeWarp;captureOS.enableTap=fakeEnableTap;captureOS.postEvent=fakePostEvent;
+  NSMutableDictionary *cases=[NSMutableDictionary dictionary];fakeReset();fakeCapture();
+  BOOL centered=capturing&&fake.detached&&fake.hidden&&atPoint(fake.point,CGPointMake(-720,540))&&atPoint(restorePoint,fakeOriginal);
+  BOOL suppressed=YES;testEvents=nil;
   CGEventRef keyDown=CGEventCreateKeyboardEvent(source,0,true),keyUp=CGEventCreateKeyboardEvent(source,0,false);
   CGEventRef down=CGEventCreateMouseEvent(source,kCGEventLeftMouseDown,CGPointMake(100,100),kCGMouseButtonLeft),up=CGEventCreateMouseEvent(source,kCGEventLeftMouseUp,CGPointMake(100,100),kCGMouseButtonLeft);
-  CGEventRef move=CGEventCreateMouseEvent(source,kCGEventMouseMoved,CGPointMake(101,102),kCGMouseButtonLeft),scroll=CGEventCreateScrollWheelEvent(source,kCGScrollEventUnitLine,2,1,0);
-  CGEventSetDoubleValueField(move,kCGMouseEventDeltaX,1);CGEventSetDoubleValueField(move,kCGMouseEventDeltaY,2);
+  CGEventRef move=fakeMove(1,2),scroll=CGEventCreateScrollWheelEvent(source,kCGScrollEventUnitLine,2,1,0);
   CGEventRef events[]={keyDown,keyUp,down,up,move,scroll};CGEventType types[]={kCGEventKeyDown,kCGEventKeyUp,kCGEventLeftMouseDown,kCGEventLeftMouseUp,kCGEventMouseMoved,kCGEventScrollWheel};
-  for(int i=0;i<6;i++){if(!events[i]||callback(NULL,types[i],events[i],NULL)!=NULL)suppressed=NO;if(events[i])CFRelease(events[i]);}
-  capturing=NO;selfTesting=NO;emit(@{@"type":@"self-test",@"suppressed":@(suppressed)});return suppressed?0:1;
+  for(int i=0;i<6;i++){if(events[i])CGEventSetIntegerValueField(events[i],kCGEventSourceUnixProcessID,0);if(!events[i]||callback(NULL,types[i],events[i],NULL)!=NULL)suppressed=NO;if(events[i])CFRelease(events[i]);}
+  testEvents=[NSMutableArray array];releaseAll();cases[@"centerAndRestore"]=@(centered&&fakeRestored());
+  int warps=fake.warps,shows=fake.shows,attaches=fake.attaches;releaseAll();cases[@"doubleRelease"]=@(fakeRestored()&&fake.warps==warps&&fake.shows==shows&&fake.attaches==attaches);
+  fakeReset();fakeCapture();command(@{@"cmd":@"disable"});cases[@"stop"]=@(fakeRestored());
+  fakeReset();fakeCapture();lastCommand-=3;watchdogTick();cases[@"watchdog"]=@(fakeRestored()&&[testEvents.lastObject[@"type"] isEqual:@"emergency"]);
+  fakeReset();fakeCapture();callback(NULL,kCGEventTapDisabledByTimeout,NULL,NULL);cases[@"tapDisabled"]=@(fakeRestored()&&fake.tapEnables==1);
+  fakeReset();fake.permission=NO;fakeCapture();cases[@"permissionFailure"]=@(fakeRestored()&&fake.warps==0&&[testEvents.lastObject[@"type"] isEqual:@"error"]);
+  fakeReset();fake.failDetach=1;fakeCapture();cases[@"detachFailure"]=@(fakeRestored()&&[testEvents.lastObject[@"type"] isEqual:@"error"]);
+  fakeReset();fake.failHide=1;fakeCapture();cases[@"hideFailure"]=@(fakeRestored()&&[testEvents.lastObject[@"type"] isEqual:@"error"]);
+  fakeReset();fake.failWarp=1;fakeCapture();cases[@"warpFailure"]=@(fakeRestored()&&[testEvents.lastObject[@"type"] isEqual:@"error"]);
+  fakeReset();fake.ignoreWarp=1;fakeCapture();cases[@"warpVerificationFailure"]=@(fakeRestored()&&[testEvents.lastObject[@"type"] isEqual:@"error"]);
+  fakeReset();fakeCapture();fake.point=CGPointMake(2,4);move=fakeMove(13,-7);NSUInteger before=testEvents.count;
+  BOOL dropped=callback(NULL,kCGEventMouseMoved,move,NULL)==NULL;CFRelease(move);
+  NSDictionary *delta=testEvents.lastObject;BOOL deltas=dropped&&testEvents.count==before+1&&[delta[@"type"] isEqual:@"move"]&&[delta[@"dx"] doubleValue]==13&&[delta[@"dy"] doubleValue]==-7;
+  BOOL corrected=capturing&&atPoint(fake.point,captureAnchor);fake.point=CGPointMake(9,9);watchdogTick();cases[@"driftCorrection"]=@(corrected&&capturing&&atPoint(fake.point,captureAnchor));
+  move=fakeMove(500,500);CGEventSetIntegerValueField(move,kCGEventSourceUserData,marker);before=testEvents.count;
+  BOOL synthetic=callback(NULL,kCGEventMouseMoved,move,NULL)==NULL&&testEvents.count==before;CGEventSetIntegerValueField(move,kCGEventSourceUserData,0);CGEventSetIntegerValueField(move,kCGEventSourceUnixProcessID,getpid());
+  synthetic=synthetic&&callback(NULL,kCGEventMouseMoved,move,NULL)==NULL&&testEvents.count==before;CFRelease(move);releaseAll();
+  fakeReset();fakeCapture();fake.point=CGPointMake(1,1);fake.failWarp=1;move=fakeMove(4,5);before=testEvents.count;callback(NULL,kCGEventMouseMoved,move,NULL);CFRelease(move);
+  cases[@"driftFailure"]=@(fakeRestored()&&testEvents.count==before+1&&[testEvents.lastObject[@"type"] isEqual:@"error"]);
+  fakeReset();fakeCapture();fake.failAttach=1;fake.failWarp=1;fake.failShow=1;BOOL pending=!releaseAll()&&pointerDetached&&restorePending&&cursorHidden&&!capturing;watchdogTick();cases[@"releaseRetry"]=@(pending&&fakeRestored());
+  fakeReset();fakeCapture();fake.failAttach=1;fake.shiftOnAttach=YES;releaseAll();watchdogTick();cases[@"attachFailureRestore"]=@(fakeRestored());
+  fakeReset();fakeCapture();fake.failAttach=1;fake.failWarp=1;fake.failShow=1;BOOL shutdownRestored=shutdownCleanup();cases[@"shutdownRetry"]=@(shutdownRestored&&fakeRestored());
+  fakeReset();fakeCapture();warps=fake.warps;move=fakeMove(5,6);callback(NULL,kCGEventMouseMoved,move,NULL);CFRelease(move);watchdogTick();cases[@"noSteadyWarp"]=@(capturing&&fake.warps==warps);releaseAll();
+  fakeReset();fakeCapture();fakeCapture();BOOL recaptured=capturing&&atPoint(restorePoint,fakeOriginal);releaseAll();cases[@"repeatCapture"]=@(recaptured&&fakeRestored());
+  fakeReset();fakeCapture();command(@{@"cmd":@"release"});cases[@"releaseCommand"]=@(fakeRestored());
+  fakeReset();fakeCapture();keyDown=CGEventCreateKeyboardEvent(source,53,true);CGEventSetIntegerValueField(keyDown,kCGEventSourceUnixProcessID,0);CGEventSetFlags(keyDown,kCGEventFlagMaskControl|kCGEventFlagMaskAlternate);callback(NULL,kCGEventKeyDown,keyDown,NULL);CFRelease(keyDown);cases[@"escape"]=@(fakeRestored()&&[testEvents.lastObject[@"type"] isEqual:@"emergency"]);
+  fakeReset();[pressed addObject:@65];[buttons addObject:@0];releaseAll();cases[@"heldInputs"]=@(fake.posts==2&&pressed.count==0&&buttons.count==0);
+  BOOL passed=suppressed&&deltas&&synthetic;for(NSString *name in [cases.allKeys copy]){BOOL result=[cases[name] boolValue];passed=passed&&result;cases[name]=result?@YES:@NO;}
+  testEvents=nil;emit(@{@"type":@"self-test",@"suppressed":@(suppressed),@"hardwareDeltasPreserved":@(deltas),@"syntheticSuppressed":@(synthetic),@"lifecycle":cases});return passed?0:1;
 }
 int main(int argc,const char **argv){@autoreleasepool{
+  signal(SIGPIPE,SIG_IGN);
   BOOL check=argc>1&&strcmp(argv[1],"--check")==0,request=argc>1&&strcmp(argv[1],"--request")==0,test=argc>1&&strcmp(argv[1],"--self-test")==0;
   if(argc>1&&!check&&!request&&!test)return 2;
   if(request){AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge NSString *)kAXTrustedCheckOptionPrompt:@YES});if(!CGPreflightListenEventAccess())CGRequestListenEventAccess();if(!CGPreflightPostEventAccess())CGRequestPostEventAccess();}
@@ -133,7 +235,11 @@ int main(int argc,const char **argv){@autoreleasepool{
   NSDictionary *permissions=permissionState();
   if(check||request||![permissions[@"permission"] boolValue]){emit(permissions);if(eventTap)CFRelease(eventTap);CFRelease(source);return check||request?0:1;}
   CFRunLoopSourceRef loopSource=CFMachPortCreateRunLoopSource(kCFAllocatorDefault,eventTap,0);CFRunLoopAddSource(CFRunLoopGetMain(),loopSource,kCFRunLoopCommonModes);CGEventTapEnable(eventTap,true);emit(permissions);
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0),^{char buffer[32770];while(fgets(buffer,sizeof(buffer),stdin)){@autoreleasepool{NSData *data=[[NSString stringWithUTF8String:buffer] dataUsingEncoding:NSUTF8StringEncoding];NSDictionary *value=[NSJSONSerialization JSONObjectWithData:data options:0 error:nil];if([value isKindOfClass:[NSDictionary class]])dispatch_async(dispatch_get_main_queue(),^{command(value);});}}dispatch_async(dispatch_get_main_queue(),^{releaseAll();exit(0);});});
-  dispatch_source_t watchdog=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_main_queue());dispatch_source_set_timer(watchdog,DISPATCH_TIME_NOW,250*NSEC_PER_MSEC,25*NSEC_PER_MSEC);dispatch_source_set_event_handler(watchdog,^{if((capturing||receiving)&&CFAbsoluteTimeGetCurrent()-lastCommand>2){releaseAll();emit(@{@"type":@"emergency"});}});dispatch_resume(watchdog);
-  CFRunLoopRun();releaseAll();CFRelease(source);return 0;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0),^{char buffer[32770];while(fgets(buffer,sizeof(buffer),stdin)){@autoreleasepool{NSData *data=[[NSString stringWithUTF8String:buffer] dataUsingEncoding:NSUTF8StringEncoding];NSDictionary *value=[NSJSONSerialization JSONObjectWithData:data options:0 error:nil];if([value isKindOfClass:[NSDictionary class]])dispatch_async(dispatch_get_main_queue(),^{command(value);});}}dispatch_async(dispatch_get_main_queue(),^{BOOL restored=shutdownCleanup();exit(restored?0:1);});});
+  dispatch_source_t watchdog=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_main_queue());dispatch_source_set_timer(watchdog,DISPATCH_TIME_NOW,250*NSEC_PER_MSEC,25*NSEC_PER_MSEC);dispatch_source_set_event_handler(watchdog,^{watchdogTick();});dispatch_resume(watchdog);
+  signal(SIGTERM,SIG_IGN);signal(SIGINT,SIG_IGN);
+  dispatch_source_t terminate=dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL,SIGTERM,0,dispatch_get_main_queue());
+  dispatch_source_t interrupt=dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL,SIGINT,0,dispatch_get_main_queue());
+  dispatch_source_set_event_handler(terminate,^{BOOL restored=shutdownCleanup();exit(restored?0:1);});dispatch_source_set_event_handler(interrupt,^{BOOL restored=shutdownCleanup();exit(restored?0:1);});dispatch_resume(terminate);dispatch_resume(interrupt);
+  CFRunLoopRun();BOOL restored=shutdownCleanup();CFRelease(source);return restored?0:1;
 }}

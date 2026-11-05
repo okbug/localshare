@@ -190,6 +190,8 @@ async function main() {
   await extensions.start();
   control = new Control(extensions);
   native = new NativeInput(control, extensions);
+  if (process.platform === "win32")
+    extensions.displayProvider = () => native.readLayout();
   clipboardSync = new ClipboardSync(extensions);
   service.on("change", () => {
     native.configure();
@@ -308,6 +310,7 @@ async function main() {
               "side",
               "invertScroll",
               "swapAltWin",
+              "entryDisplay",
             ].includes(k),
         )
       )
@@ -324,6 +327,8 @@ async function main() {
     },
     requestPermission: () => native.check(true),
     emergencyStop: () => control.stop(),
+    refreshDisplays: (fp: unknown) =>
+      extensions.fetchDisplayLayout(string(fp, 128)),
   };
   ipcMain.handle(
     "localshare:call",

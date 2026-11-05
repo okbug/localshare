@@ -17,6 +17,37 @@ test(
       .map((line) => JSON.parse(line));
     assert.equal(events.at(-1).type, "self-test");
     assert.equal(events.at(-1).suppressed, true);
+    assert.equal(events.at(-1).hardwareDeltasPreserved, true);
+    assert.equal(events.at(-1).syntheticSuppressed, true);
+    const lifecycle = events.at(-1).lifecycle;
+    assert.deepEqual(
+      Object.keys(lifecycle).sort(),
+      [
+        "attachFailureRestore",
+        "centerAndRestore",
+        "detachFailure",
+        "doubleRelease",
+        "driftCorrection",
+        "driftFailure",
+        "hideFailure",
+        "heldInputs",
+        "escape",
+        "noSteadyWarp",
+        "repeatCapture",
+        "releaseCommand",
+        "permissionFailure",
+        "releaseRetry",
+        "shutdownRetry",
+        "stop",
+        "tapDisabled",
+        "watchdog",
+        "warpFailure",
+        "warpVerificationFailure",
+      ].sort(),
+    );
+    for (const [name, passed] of Object.entries(lifecycle)) {
+      assert.equal(passed, true, `Mac capture lifecycle: ${name}`);
+    }
     assert.deepEqual(
       events.slice(0, 6).map((e) => e.type),
       ["key", "key", "button", "button", "move", "scroll"],
@@ -42,5 +73,6 @@ test(
       }).trim(),
     );
     assert.equal(typeof readiness.permission, "boolean");
+    assert.equal(readiness.protocolVersion, 3);
   },
 );

@@ -1349,6 +1349,49 @@ footer > span:last-child {
 .input-preference-row .toggle {
   flex-shrink: 0;
 }
+.display-layout-panel {
+  border-top: 1px solid #eef2e7;
+  padding-top: 16px;
+  margin-top: 16px;
+}
+.display-layout-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.display-layout-heading h4 {
+  margin: 0;
+  font-size: 12px;
+}
+.display-layout-panel p {
+  color: #748363;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.monitor-map {
+  display: block;
+  width: 100%;
+  height: 220px;
+  background: #fafbf7;
+  border-radius: 10px;
+  margin: 12px 0;
+}
+.display-entry-select {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+}
+.display-entry-select select {
+  max-width: 100%;
+  font-size: 12px;
+  padding: 7px;
+}
+.display-layout-panel .display-layout-error {
+  color: #a75435;
+}
 .screen-layout > div,
 .screen-layout > span {
   display: flex;

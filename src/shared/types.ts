@@ -62,6 +62,22 @@ export interface TrustedPeer {
   side: "left" | "right";
   invertScroll: boolean;
   swapAltWin: boolean;
+  entryDisplay: string;
+}
+export interface DisplayInfo {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  primary: boolean;
+}
+export interface DisplayLayout {
+  version: 1;
+  platform: "windows";
+  entrySelection: true;
+  displays: DisplayInfo[];
 }
 export interface PairRequest {
   id: string;
@@ -75,6 +91,7 @@ export interface ExtensionState {
   control: { mode: "local" | "sending" | "receiving"; peer?: string };
   clipboardEnabled: boolean;
   controlEnabled: boolean;
+  displayLayouts?: Record<string, DisplayLayout>;
 }
 export interface Snapshot {
   info: DeviceInfo;
@@ -93,6 +110,7 @@ export interface DesktopSnapshot extends Snapshot {
     error?: string;
     accessibility?: boolean;
     inputMonitoring?: boolean;
+    layout?: DisplayLayout;
   };
 }
 export interface DesktopAPI {
@@ -121,13 +139,19 @@ export interface DesktopAPI {
     settings: Partial<
       Pick<
         TrustedPeer,
-        "clipboard" | "control" | "side" | "invertScroll" | "swapAltWin"
+        | "clipboard"
+        | "control"
+        | "side"
+        | "invertScroll"
+        | "swapAltWin"
+        | "entryDisplay"
       >
     >,
   ): Promise<void>;
   extensionSettings(clipboard: boolean, control: boolean): Promise<void>;
   requestPermission(): Promise<void>;
   emergencyStop(): Promise<void>;
+  refreshDisplays(fingerprint: string): Promise<DisplayLayout>;
 }
 declare global {
   interface Window {

@@ -11,6 +11,8 @@ import { createInterface } from "node:readline";
 import { Control, validInput } from "../core/control";
 import { Extensions } from "../core/extensions";
 import { NativeCommands } from "./native-commands";
+import { parseDisplayLayout } from "../shared/displays";
+import type { DisplayLayout } from "../shared/types";
 export class NativeInput extends EventEmitter {
   state = {
     available: false,
@@ -18,10 +20,13 @@ export class NativeInput extends EventEmitter {
     error: undefined as string | undefined,
     accessibility: undefined as boolean | undefined,
     inputMonitoring: undefined as boolean | undefined,
+    layout: undefined as DisplayLayout | undefined,
   };
   private process?: ChildProcessWithoutNullStreams;
   private heartbeat?: ReturnType<typeof setInterval>;
   private configuration = "";
+  private layoutRequest?: Promise<DisplayLayout>;
+  private layoutReadAt = 0;
   private commands = new NativeCommands((command) => this.send(command, true));
   private helper = join(
     app.isPackaged
@@ -60,6 +65,34 @@ export class NativeInput extends EventEmitter {
     else if (required)
       throw new Error("原生输入模块未运行，请重新开启键鼠共享");
   }
+  async readLayout(): Promise<DisplayLayout> {
+    if (process.platform !== "win32")
+      throw new Error("此设备尚不支持多屏入口设置");
+    if (this.layoutRequest) return this.layoutRequest;
+    if (this.state.layout && Date.now() - this.layoutReadAt < 500)
+      return structuredClone(this.state.layout);
+    this.layoutRequest = this.readLayoutProcess();
+    try {
+      return await this.layoutRequest;
+    } finally {
+      this.layoutRequest = undefined;
+    }
+  }
+  private async readLayoutProcess(): Promise<DisplayLayout> {
+    const data = await new Promise<string>((resolve, reject) =>
+      execFile(
+        this.helper,
+        ["--layout"],
+        { timeout: 3000, windowsHide: true, maxBuffer: 32768 },
+        (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
+      ),
+    );
+    const layout = parseDisplayLayout(JSON.parse(data));
+    this.state.layout = layout;
+    this.layoutReadAt = Date.now();
+    this.emit("change");
+    return layout;
+  }
   async check(prompt = false) {
     this.state.available = existsSync(this.helper);
     if (!this.state.available) {
@@ -76,11 +109,12 @@ export class NativeInput extends EventEmitter {
           try {
             const status = JSON.parse(stdout.trim());
             this.state.permission =
-              status.permission === true && status.protocolVersion === 2;
+              status.permission === true && status.protocolVersion === 3;
+            if (status.displays) this.state.layout = parseDisplayLayout(status);
             this.state.accessibility = status.accessibility;
             this.state.inputMonitoring = status.listen;
             this.state.error =
-              status.protocolVersion !== 2
+              status.protocolVersion !== 3
                 ? "输入模块版本不匹配，请安装完整的新版本 LocalShare。"
                 : err
                   ? "输入模块检查失败"
@@ -137,13 +171,27 @@ export class NativeInput extends EventEmitter {
           const e = JSON.parse(line);
           if (e.type === "ready") {
             clearTimeout(timer);
-            if (e.permission === true && e.protocolVersion === 2) resolve();
-            else
+            if (e.permission === true && e.protocolVersion === 3) {
+              if (e.displays) this.state.layout = parseDisplayLayout(e);
+              resolve();
+            } else
               reject(
                 new Error(
                   "输入模块缺少完整输入权限或版本不匹配，请检查辅助功能与输入监控权限后重启应用。",
                 ),
               );
+          } else if (e.type === "layout") {
+            try {
+              this.state.layout = parseDisplayLayout(e);
+              this.layoutReadAt = Date.now();
+              this.state.error = "Windows 屏幕排列已更新，请重新跨屏。";
+            } catch {
+              this.state.layout = undefined;
+              this.state.error = "Windows 屏幕排列无法读取，已恢复本机控制。";
+            }
+            this.commands.fail(new Error(this.state.error));
+            void this.control.stop();
+            this.emit("change");
           } else if (this.commands.accept(e)) {
             // Activation is only committed after the native process confirms it.
           } else if (e.type === "error") {

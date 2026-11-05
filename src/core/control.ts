@@ -4,6 +4,11 @@ import { Extensions } from "./extensions";
 import { readJSON, reply } from "./service";
 import { HttpError, jsonReply } from "./transport";
 import type { TrustedPeer } from "../shared/types";
+import {
+  validDisplayId,
+  entryDisplays,
+  parseDisplayLayout,
+} from "../shared/displays";
 const swappedModifiers: Readonly<Record<number, number>> = {
   164: 91,
   165: 92,
@@ -17,7 +22,11 @@ export type InputEvent =
   | { type: "scroll"; dx: number; dy: number };
 export interface InputAdapter {
   capture(): Promise<void>;
-  receive(position: { side: "left" | "right"; y: number }): Promise<void>;
+  receive(position: {
+    side: "left" | "right";
+    y: number;
+    display?: string;
+  }): Promise<void>;
   inject(event: InputEvent): void;
   release(): void;
 }
@@ -100,7 +109,8 @@ export class Control extends EventEmitter {
           !["left", "right"].includes(body.side) ||
           typeof body.y !== "number" ||
           body.y < 0 ||
-          body.y > 1
+          body.y > 1 ||
+          (body.display !== undefined && !validDisplayId(body.display))
         )
           throw new HttpError(400, "控制参数无效");
         this.session = {
@@ -118,10 +128,31 @@ export class Control extends EventEmitter {
         };
         const receiving = this.session;
         try {
-          await this.input?.receive({ side: body.side, y: body.y });
+          if (body.display) {
+            if (!extensions.displayProvider)
+              throw new Error("此设备不支持指定入口，请升级应用");
+            const layout = parseDisplayLayout(
+              await extensions.displayProvider(),
+            );
+            if (
+              !entryDisplays(
+                layout,
+                body.side === "right" ? "left" : "right",
+              ).some((d) => d.id === body.display)
+            )
+              throw new Error(
+                "入口显示器不存在或此侧被其他屏幕遮挡，请刷新屏幕排列",
+              );
+            if (this.session !== receiving) throw new Error("输入接收已取消");
+          }
+          await this.input?.receive({
+            side: body.side,
+            y: body.y,
+            ...(body.display ? { display: body.display } : {}),
+          });
           if (this.session !== receiving) throw new Error("输入接收已取消");
         } catch (error) {
-          await this.stop(false);
+          if (this.session === receiving) await this.stop(false);
           throw new HttpError(503, (error as Error).message);
         }
         this.publish();
@@ -219,13 +250,28 @@ export class Control extends EventEmitter {
     };
     this.session = s;
     try {
+      if (peer.entryDisplay) {
+        const layout = await this.extensions.fetchDisplayLayout(fp);
+        if (
+          !entryDisplays(layout, side === "right" ? "left" : "right").some(
+            (d) => d.id === peer.entryDisplay,
+          )
+        )
+          throw new Error("入口显示器不可用，请刷新屏幕排列并重新选择入口");
+        if (this.session !== s) throw new Error("控制连接已取消");
+      }
       await this.input?.capture();
       if (this.session !== s) throw new Error("本机截获已取消");
       jsonReply(
         await this.extensions.call(
           fp,
           "/control/start",
-          { id: s.id, side, y },
+          {
+            id: s.id,
+            side,
+            y,
+            ...(peer.entryDisplay ? { display: peer.entryDisplay } : {}),
+          },
           { timeout: 1500, signal: s.abort.signal },
         ),
       );
@@ -233,7 +279,7 @@ export class Control extends EventEmitter {
       this.publish();
       this.emit("capture", { side });
     } catch (e) {
-      await this.stop();
+      if (this.session === s) await this.stop();
       throw e;
     }
   }

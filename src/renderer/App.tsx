@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { version as appVersion } from "../../package.json";
 import { ControlSetupGuide } from "./components/ControlSetupGuide";
+import { DisplayLayoutPanel } from "./components/DisplayLayoutPanel";
 import {
   ArrowUpRight,
   ArrowDownLeft,
@@ -995,6 +996,23 @@ export default function App() {
                         />
                       </div>
                     </div>
+                    {state.devices.some(
+                      (d) =>
+                        d.fingerprint === p.fingerprint &&
+                        /windows/i.test(d.deviceModel),
+                    ) ||
+                    state.extensions.displayLayouts?.[p.fingerprint] ||
+                    p.entryDisplay ? (
+                      <DisplayLayoutPanel
+                        peer={p}
+                        layout={
+                          state.extensions.displayLayouts?.[p.fingerprint]
+                        }
+                        change={(patch) =>
+                          window.localshare.peerSettings(p.fingerprint, patch)
+                        }
+                      />
+                    ) : null}
                     <div className="screen-layout">
                       {p.side === "left" ? (
                         <span>

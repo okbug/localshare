@@ -1,4 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <iostream>
 #include <string>
@@ -6,19 +7,83 @@
 #include <set>
 #include <algorithm>
 #include <cmath>
+#include <cctype>
+#include <vector>
+#include "display-geometry.h"
+#define DISPLAY_GEOMETRY_EMBEDDED_TEST
+#include "display-geometry-test.cpp"
 
 constexpr ULONG_PTR marker = 0x4c534841;
 constexpr UINT commandMessage = WM_APP + 1;
 DWORD mainThread;
 bool capture = false, receiving = false, enabled = false, allowLeft = false, allowRight = false;
 bool returnLeft = true;
+std::vector<display_geometry::Display> displays;
+std::vector<display_geometry::Portal> returnPortals;
+ULONGLONG receivedAt = 0, lastLayoutCheck = 0;
+HWND notificationWindow = nullptr;
 ULONGLONG lastCommand = 0, lastEdge = 0;
 POINT anchor{};
 POINT returnPoint{};
 std::set<int> keys, buttons;
 std::set<DWORD> physicalKeys;
 HHOOK mouseHook, keyHook;
-int screenWidth, screenHeight;
+bool layoutValid = false;
+std::string layoutFields() {
+  std::string result="\"version\":1,\"platform\":\"windows\",\"entrySelection\":true,\"displays\":[";
+  for(size_t n=0;n<displays.size();++n){const auto&d=displays[n];if(n)result+=",";
+    result+="{\"id\":\""+d.id+"\",\"name\":\""+d.id+"\",\"x\":"+std::to_string(d.x)+",\"y\":"+std::to_string(d.y)+",\"width\":"+std::to_string(d.width)+",\"height\":"+std::to_string(d.height)+",\"primary\":"+(d.primary?"true":"false")+"}";}
+  return result+"]";
+}
+std::string displayID(const wchar_t* device) {
+  std::string id;for(;*device;++device){wchar_t c=*device;if((c>=L'A'&&c<=L'Z')||(c>=L'a'&&c<=L'z')||(c>=L'0'&&c<=L'9')||c==L'_'||c==L'.'||c==L':'||c==L'-')id+=char(c);}
+  while(!id.empty()&&id.front()=='.')id.erase(id.begin());
+  if(id.size()>80)id.resize(80);return id;
+}
+bool validDisplayID(const std::string& id) {
+  if(id.empty()||id.size()>80)return false;
+  for(unsigned char c:id)if(!((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'||c=='.'||c==':'||c=='-'))return false;
+  return true;
+}
+BOOL CALLBACK enumerateMonitor(HMONITOR monitor,HDC,LPRECT,LPARAM param) {
+  auto&result=*reinterpret_cast<std::vector<display_geometry::Display>*>(param);
+  MONITORINFOEXW info{};info.cbSize=sizeof(info);
+  if(!GetMonitorInfoW(monitor,&info))return FALSE;
+  // Resolve the display adapter, not its optional child monitor device.
+  bool active=false;
+  for(DWORD n=0;;++n){DISPLAY_DEVICEW device{};device.cb=sizeof(device);
+    if(!EnumDisplayDevicesW(nullptr,n,&device,0))break;
+    if(wcscmp(device.DeviceName,info.szDevice)==0){
+      if(device.StateFlags&DISPLAY_DEVICE_MIRRORING_DRIVER)return TRUE;
+      active=(device.StateFlags&DISPLAY_DEVICE_ACTIVE)!=0;break;}}
+  if(!active)return FALSE;
+  auto r=info.rcMonitor;auto id=displayID(info.szDevice);
+  if(!validDisplayID(id)||r.right<=r.left||r.bottom<=r.top)return FALSE;
+  result.push_back({id,int(r.left),int(r.top),int(r.right-r.left),int(r.bottom-r.top),(info.dwFlags&MONITORINFOF_PRIMARY)!=0});return TRUE;
+}
+bool readLayout(std::vector<display_geometry::Display>& result) {
+  if(!EnumDisplayMonitors(nullptr,nullptr,enumerateMonitor,reinterpret_cast<LPARAM>(&result))||result.empty())return false;
+  result=display_geometry::canonical(result);if(result.size()>32)return false;
+  std::set<std::string> ids;int primary=0;
+  for(const auto&d:result){if(d.primary)++primary;if(!ids.insert(d.id).second||std::abs(double(d.x))>1000000||std::abs(double(d.y))>1000000||d.width>32768||d.height>32768)return false;}
+  return primary==1;
+}
+bool sameLayout(const std::vector<display_geometry::Display>& a,const std::vector<display_geometry::Display>& b) {
+  if(a.size()!=b.size())return false;for(size_t n=0;n<a.size();++n){const auto&x=a[n];const auto&y=b[n];if(x.id!=y.id||x.x!=y.x||x.y!=y.y||x.width!=y.width||x.height!=y.height||x.primary!=y.primary)return false;}return true;
+}
+void releaseAll(bool restore = true);
+bool refreshLayout(bool report=true);
+bool configureDPI() {
+  using SetContext=BOOL(WINAPI*)(HANDLE);
+  auto setContext=reinterpret_cast<SetContext>(GetProcAddress(GetModuleHandleW(L"user32.dll"),"SetProcessDpiAwarenessContext"));
+  if(!setContext)return false;
+  HANDLE pmv2=reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4));
+  if(setContext(pmv2))return true;
+  using GetContext=HANDLE(WINAPI*)();using EqualContext=BOOL(WINAPI*)(HANDLE,HANDLE);
+  auto getContext=reinterpret_cast<GetContext>(GetProcAddress(GetModuleHandleW(L"user32.dll"),"GetThreadDpiAwarenessContext"));
+  auto equalContext=reinterpret_cast<EqualContext>(GetProcAddress(GetModuleHandleW(L"user32.dll"),"AreDpiAwarenessContextsEqual"));
+  return getContext&&equalContext&&equalContext(getContext(),pmv2);
+}
 void emit(const std::string& s) { std::cout << s << std::endl; }
 // The parent sends flat, validated JSON with fixed ASCII keys. No remote strings
 // or clipboard content reach this helper.
@@ -33,7 +98,6 @@ std::string str(const std::string& s, const std::string& key) {
 }
 double num(const std::string& s,const std::string& key) {auto pos=valueAt(s,key);if(pos==std::string::npos)return 0;try{return std::stod(s.substr(pos));}catch(...){return 0;}}
 bool boolean(const std::string& s,const std::string& key) {auto pos=valueAt(s,key);return pos!=std::string::npos&&s.compare(pos,4,"true")==0;}
-void releaseAll();
 void inputFailure(const char* operation,DWORD code) {
   releaseAll();
   emit("{\"type\":\"error\",\"operation\":\""+std::string(operation)+"\",\"code\":"+std::to_string(code)+"}");
@@ -58,27 +122,67 @@ INPUT buttonInput(int b,bool down) {
   return i;
 }
 bool sendButton(int b,bool down,bool report=true) {INPUT i=buttonInput(b,down);return inject(i,"button",report);}
-void releaseAll() {
-  if(capture){ShowCursor(TRUE);SetCursorPos(returnPoint.x,returnPoint.y);}
+void releaseAll(bool restore) {
+  if(capture)ShowCursor(TRUE);
+  if(capture&&restore&&!displays.empty()){auto p=display_geometry::clamp(displays,{double(returnPoint.x),double(returnPoint.y)});SetCursorPos(LONG(std::lround(p.x)),LONG(std::lround(p.y)));}
   capture=false;receiving=false;lastEdge=GetTickCount64();
   for(int key:keys)sendKey(key,false,false);for(int b:buttons)sendButton(b,false,false);
-  keys.clear();buttons.clear();
+  keys.clear();buttons.clear();returnPortals.clear();
+}
+bool refreshLayout(bool report) {
+  lastLayoutCheck=GetTickCount64();
+  std::vector<display_geometry::Display> next;
+  if(!readLayout(next)){
+    bool active=capture||receiving;releaseAll(false);layoutValid=false;
+    if(report){emit("{\"type\":\"error\",\"operation\":\"layout\",\"code\":"+std::to_string(ERROR_INVALID_DATA)+"}");if(active)emit("{\"type\":\"emergency\"}");}
+    return false;
+  }
+  bool changed=!layoutValid||!sameLayout(displays,next),active=capture||receiving;
+  if(changed){
+    // Install the new safe restore bounds before restoring a removed monitor.
+    displays=std::move(next);releaseAll();layoutValid=true;
+    if(report){emit("{\"type\":\"layout\","+layoutFields()+"}");if(active)emit("{\"type\":\"emergency\"}");}
+  }
+  lastLayoutCheck=GetTickCount64();return true;
+}
+LRESULT CALLBACK windowProc(HWND window,UINT message,WPARAM w,LPARAM l) {
+  if(message==WM_DISPLAYCHANGE||message==WM_DPICHANGED||message==WM_DEVICECHANGE){refreshLayout();return 0;}
+  return DefWindowProcW(window,message,w,l);
 }
 void command(const std::string& s) {
   lastCommand=GetTickCount64();auto cmd=str(s,"cmd");
-  if(cmd=="enable"){enabled=true;allowLeft=boolean(s,"left");allowRight=boolean(s,"right");}
+  if(cmd=="enable"){if(!refreshLayout())return;enabled=true;allowLeft=boolean(s,"left");allowRight=boolean(s,"right");}
   else if(cmd=="disable"){enabled=false;releaseAll();}
-  else if(cmd=="capture"){releaseAll();GetCursorPos(&returnPoint);returnPoint.x=std::clamp(returnPoint.x,LONG(3),LONG(screenWidth-4));anchor={screenWidth/2,screenHeight/2};if(!SetCursorPos(anchor.x,anchor.y)){inputFailure("capture",GetLastError());return;}capture=true;ShowCursor(FALSE);emit("{\"type\":\"captured\",\"requestId\":\""+str(s,"requestId")+"\"}");}
-  else if(cmd=="receive"){releaseAll();returnLeft=str(s,"side")=="right";if(!SetCursorPos(returnLeft?5:screenWidth-6,int(std::clamp(num(s,"y"),0.0,1.0)*(screenHeight-1)))){inputFailure("receive",GetLastError());return;}receiving=true;emit("{\"type\":\"receiving\",\"requestId\":\""+str(s,"requestId")+"\"}");}
+  else if(cmd=="capture"){
+    releaseAll();if(!refreshLayout())return;
+    if(!GetCursorPos(&returnPoint)){inputFailure("capture",GetLastError());return;}
+    auto restore=display_geometry::clamp(displays,{double(returnPoint.x),double(returnPoint.y)});
+    returnPoint={LONG(std::lround(restore.x)),LONG(std::lround(restore.y))};
+    int index=display_geometry::containing(displays,restore);if(index<0){inputFailure("capture",ERROR_INVALID_DATA);return;}
+    const auto&d=displays[size_t(index)];anchor={LONG(d.x+d.width/2),LONG(d.y+d.height/2)};
+    if(!SetCursorPos(anchor.x,anchor.y)){inputFailure("capture",GetLastError());return;}
+    capture=true;ShowCursor(FALSE);emit("{\"type\":\"captured\",\"requestId\":\""+str(s,"requestId")+"\"}");
+  }
+  else if(cmd=="receive"){
+    releaseAll();if(!refreshLayout())return;returnLeft=str(s,"side")=="right";
+    auto selected=str(s,"display");if(!selected.empty()&&!validDisplayID(selected)){inputFailure("receive",ERROR_INVALID_DATA);return;}
+    auto portals=display_geometry::portals(displays,returnLeft,selected);
+    if(portals.empty()){inputFailure("receive",ERROR_NOT_FOUND);return;}
+    auto p=display_geometry::entry(displays,portals,num(s,"y"));
+    if(!SetCursorPos(LONG(std::lround(p.x)),LONG(std::lround(p.y)))){inputFailure("receive",GetLastError());return;}
+    returnPortals=std::move(portals);receivedAt=GetTickCount64();receiving=true;
+    emit("{\"type\":\"receiving\",\"requestId\":\""+str(s,"requestId")+"\"}");
+  }
   else if(cmd=="release")releaseAll();
   else if(cmd=="event"&&receiving){
     auto type=str(s,"type");
     if(type=="move"){
-      POINT current;GetCursorPos(&current);double dx=num(s,"dx"),dy=num(s,"dy");
-      int x=current.x+int(dx),y=current.y+int(dy);
-      if((returnLeft&&dx<0&&x<=0)||(!returnLeft&&dx>0&&x>=screenWidth-1)){releaseAll();emit("{\"type\":\"return\"}");return;}
-      INPUT i{};i.type=INPUT_MOUSE;i.mi.dwFlags=MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE;i.mi.dwExtraInfo=marker;
-      i.mi.dx=LONG(double(std::clamp(x,0,screenWidth-1))*65535/(screenWidth-1));i.mi.dy=LONG(double(std::clamp(y,0,screenHeight-1))*65535/(screenHeight-1));inject(i,"move");
+      POINT current;if(!GetCursorPos(&current)){inputFailure("move",GetLastError());return;}
+      auto result=display_geometry::move(displays,{double(current.x),double(current.y)},num(s,"dx"),num(s,"dy"),GetTickCount64()-receivedAt>=250?returnPortals:std::vector<display_geometry::Portal>{});
+      if(result.returned){releaseAll();emit("{\"type\":\"return\"}");return;}
+      auto b=display_geometry::bounds(displays);
+      INPUT i{};i.type=INPUT_MOUSE;i.mi.dwFlags=MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK;i.mi.dwExtraInfo=marker;
+      i.mi.dx=display_geometry::normalize(std::lround(result.point.x),b.x,b.width);i.mi.dy=display_geometry::normalize(std::lround(result.point.y),b.y,b.height);inject(i,"move");
     }else if(type=="key"){int key=int(num(s,"key"));bool down=boolean(s,"down");if(sendKey(key,down)){if(down)keys.insert(key);else keys.erase(key);}}
     else if(type=="button"){int b=int(num(s,"button"));bool down=boolean(s,"down");if(sendButton(b,down)){if(down)buttons.insert(b);else buttons.erase(b);}}
     else if(type=="scroll"){
@@ -96,7 +200,7 @@ LRESULT CALLBACK mouseProc(int code,WPARAM message,LPARAM param){
     if(message==WM_MOUSEMOVE){
       int dx=e->pt.x-anchor.x,dy=e->pt.y-anchor.y;
       if(dx||dy)emit("{\"type\":\"move\",\"dx\":"+std::to_string(dx)+",\"dy\":"+std::to_string(dy)+"}");
-      SetCursorPos(anchor.x,anchor.y);
+      if(!SetCursorPos(anchor.x,anchor.y)){inputFailure("capture-warp",GetLastError());return 1;}
     }else if(message==WM_MOUSEWHEEL||message==WM_MOUSEHWHEEL){
       double delta=double(static_cast<short>(HIWORD(e->mouseData)))/120;
       emit("{\"type\":\"scroll\",\"dx\":"+std::to_string(message==WM_MOUSEHWHEEL?delta:0)+",\"dy\":"+std::to_string(message==WM_MOUSEWHEEL?delta:0)+"}");
@@ -108,8 +212,11 @@ LRESULT CALLBACK mouseProc(int code,WPARAM message,LPARAM param){
     return 1;
   }
   if(enabled&&!receiving&&message==WM_MOUSEMOVE&&GetTickCount64()-lastEdge>1000){
-    const bool left=allowLeft&&e->pt.x<=0,right=allowRight&&e->pt.x>=screenWidth-1;
-    if(left||right){lastEdge=GetTickCount64();emit("{\"type\":\"edge\",\"side\":\""+std::string(left?"left":"right")+"\",\"y\":"+std::to_string(double(e->pt.y)/(screenHeight-1))+"}");}
+    if(!layoutValid)return CallNextHookEx(mouseHook,code,message,param);
+    auto b=display_geometry::bounds(displays);bool left=false,right=false;
+    if(allowLeft)for(const auto&p:display_geometry::portals(displays,true))if(e->pt.x<=p.x&&e->pt.y+.5>=p.y0&&e->pt.y+.5<p.y1)left=true;
+    if(allowRight)for(const auto&p:display_geometry::portals(displays,false))if(e->pt.x>=p.x-1&&e->pt.y+.5>=p.y0&&e->pt.y+.5<p.y1)right=true;
+    if(left||right){lastEdge=GetTickCount64();emit("{\"type\":\"edge\",\"side\":\""+std::string(left?"left":"right")+"\",\"y\":"+std::to_string(double(e->pt.y-b.y)/std::max(1,b.height-1))+"}");}
   }
   return CallNextHookEx(mouseHook,code,message,param);
 }
@@ -126,28 +233,43 @@ LRESULT CALLBACK keyProc(int code,WPARAM message,LPARAM param){
   return CallNextHookEx(keyHook,code,message,param);
 }
 int main(int argc,char** argv){
+  // Self-tests exercise constructed input records and pure geometry only.
+  if(!(argc>1&&std::string(argv[1])=="--self-test")&&!configureDPI()){
+    emit("{\"type\":\"error\",\"operation\":\"dpi-awareness\"}");return 1;
+  }
   if(argc>1){
     std::string arg=argv[1];
     if(arg=="--self-test"){
       std::string value="{\"cmd\":\"event\",\"type\":\"key\",\"key\":65,\"down\":true}";
       INPUT down=keyInput(65,true),up=keyInput(65,false),button=buttonInput(0,true);
-      bool passed=str(value,"cmd")=="event"&&str(value,"type")=="key"&&num(value,"key")==65&&boolean(value,"down")&&down.ki.wScan!=0&&(down.ki.dwFlags&KEYEVENTF_SCANCODE)&&(up.ki.dwFlags&KEYEVENTF_KEYUP)&&button.mi.dwFlags==MOUSEEVENTF_LEFTDOWN;
-      emit(std::string("{\"type\":\"self-test\",\"passed\":")+(passed?"true":"false")+"}");return passed?0:1;
+      bool geometry=false;try{runGeometryTests();geometry=true;}catch(const std::exception&e){std::cerr<<e.what()<<std::endl;}
+      bool passed=geometry&&str(value,"cmd")=="event"&&str(value,"type")=="key"&&num(value,"key")==65&&boolean(value,"down")&&down.ki.wScan!=0&&(down.ki.dwFlags&KEYEVENTF_SCANCODE)&&(up.ki.dwFlags&KEYEVENTF_KEYUP)&&button.mi.dwFlags==MOUSEEVENTF_LEFTDOWN&&displayID(L"\\\\.\\DISPLAY1")=="DISPLAY1"&&validDisplayID("DISPLAY1")&&!validDisplayID("bad\"id");
+      emit(std::string("{\"type\":\"self-test\",\"geometry\":")+(geometry?"true":"false")+",\"passed\":"+(passed?"true":"false")+"}");return passed?0:1;
     }
-    if(arg!="--check"&&arg!="--request")return 2;
-    emit("{\"type\":\"ready\",\"protocolVersion\":2,\"permission\":true}");return 0;
+    if(arg!="--check"&&arg!="--request"&&arg!="--layout")return 2;
+    if(!refreshLayout(false)){emit("{\"type\":\"error\",\"operation\":\"layout\"}");return 1;}
+    if(arg=="--layout")emit("{"+layoutFields()+"}");
+    else emit("{\"type\":\"ready\",\"protocolVersion\":3,\"permission\":true,"+layoutFields()+"}");return 0;
   }
-  SetProcessDPIAware();screenWidth=GetSystemMetrics(SM_CXSCREEN);screenHeight=GetSystemMetrics(SM_CYSCREEN);
+  if(!refreshLayout(false)){emit("{\"type\":\"error\",\"operation\":\"layout\"}");return 1;}
   mainThread=GetCurrentThreadId();MSG msg;PeekMessage(&msg,nullptr,0,0,PM_NOREMOVE);
+  WNDCLASSW wc{};wc.lpfnWndProc=windowProc;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"LocalShareDisplayNotifications";
+  if(!RegisterClassW(&wc)){inputFailure("display-notifications",GetLastError());return 1;}
+  // A message-only window does not receive broadcast WM_DISPLAYCHANGE.
+  notificationWindow=CreateWindowExW(0,wc.lpszClassName,L"",WS_OVERLAPPED,0,0,0,0,nullptr,nullptr,wc.hInstance,nullptr);
+  if(!notificationWindow){inputFailure("display-notifications",GetLastError());return 1;}
   mouseHook=SetWindowsHookEx(WH_MOUSE_LL,mouseProc,GetModuleHandle(nullptr),0);keyHook=SetWindowsHookEx(WH_KEYBOARD_LL,keyProc,GetModuleHandle(nullptr),0);
-  if(!mouseHook||!keyHook){emit("{\"type\":\"ready\",\"protocolVersion\":2,\"permission\":false}");return 1;}
-  lastCommand=GetTickCount64();emit("{\"type\":\"ready\",\"protocolVersion\":2,\"permission\":true}");
+  if(!mouseHook||!keyHook){emit("{\"type\":\"ready\",\"protocolVersion\":3,\"permission\":false}");return 1;}
+  lastCommand=GetTickCount64();emit("{\"type\":\"ready\",\"protocolVersion\":3,\"permission\":true,"+layoutFields()+"}");
   std::thread([](){std::string line;while(std::getline(std::cin,line)){if(line.size()>32768)continue;auto p=new std::string(line);if(!PostThreadMessage(mainThread,commandMessage,0,reinterpret_cast<LPARAM>(p)))delete p;}PostThreadMessage(mainThread,WM_QUIT,0,0);}).detach();
-  SetTimer(nullptr,1,100,nullptr);
+  if(!SetTimer(nullptr,1,100,nullptr)){inputFailure("watchdog",GetLastError());return 1;}
   while(GetMessage(&msg,nullptr,0,0)>0){
     if(msg.message==commandMessage){auto p=reinterpret_cast<std::string*>(msg.lParam);command(*p);delete p;}
-    else if(msg.message==WM_TIMER){if((capture||receiving)&&GetTickCount64()-lastCommand>2000){releaseAll();emit("{\"type\":\"emergency\"}");}}
+    else if(msg.message==WM_TIMER){
+      if(GetTickCount64()-lastLayoutCheck>=3000)refreshLayout();
+      if((capture||receiving)&&GetTickCount64()-lastCommand>2000){releaseAll();emit("{\"type\":\"emergency\"}");}
+    }
     else{TranslateMessage(&msg);DispatchMessage(&msg);}
   }
-  releaseAll();UnhookWindowsHookEx(mouseHook);UnhookWindowsHookEx(keyHook);return 0;
+  releaseAll();UnhookWindowsHookEx(mouseHook);UnhookWindowsHookEx(keyHook);DestroyWindow(notificationWindow);return 0;
 }

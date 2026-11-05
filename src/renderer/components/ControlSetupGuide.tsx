@@ -19,8 +19,9 @@ export function ControlSetupGuide() {
         </li>
         <li>
           <strong>设置左右位置：</strong>Mac 在左、Windows 在右时，Mac 中选
-          Windows 在「右侧」，Windows 中选 Mac
-          在「左侧」。把鼠标继续推过主屏幕边缘即可切换。
+          Windows 在「右侧」，Windows 中选 Mac 在「左侧」。Mac
+          从主屏边缘跨出；Windows 多屏按系统排列移动，从面向 Mac
+          的最外侧边缘返回。
         </li>
       </ol>
       <p>

@@ -1,6 +1,6 @@
 {
   "name": "localshare",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "description": "LocalSend-compatible LAN sharing with trusted clipboard and input sharing",
@@ -21,7 +21,8 @@
     "dist:mac": "bun run build && electron-builder --mac zip",
     "verify:mac": "bun scripts/verify-mac.ts",
     "dist:win": "bun run build && electron-builder --win nsis portable",
-    "smoke": "bun build scripts/smoke.ts --target=node --packages=external --outfile=test-results/smoke.mjs && node test-results/smoke.mjs"
+    "smoke": "bun build scripts/smoke.ts --target=node --packages=external --outfile=test-results/smoke.mjs && node test-results/smoke.mjs",
+    "smoke:displays": "bun build scripts/smoke-displays.ts --target=node --packages=external --outfile=test-results/smoke-displays.mjs && node test-results/smoke-displays.mjs"
   },
   "build": {
     "appId": "org.localshare.desktop",

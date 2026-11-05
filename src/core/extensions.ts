@@ -14,7 +14,13 @@ import type {
   PairRequest,
   TrustedPeer,
   ExtensionState,
+  DisplayLayout,
 } from "../shared/types";
+import {
+  entryDisplays,
+  parseDisplayLayout,
+  validDisplayId,
+} from "../shared/displays";
 import {
   LocalShareService,
   deviceInfo,
@@ -62,6 +68,8 @@ export class Extensions extends EventEmitter {
   private clipboardEnabled = false;
   private controlEnabled = false;
   private persistence: Promise<void> = Promise.resolve();
+  private displayLayouts = new Map<string, DisplayLayout>();
+  displayProvider?: () => Promise<DisplayLayout>;
   controlHandler?: (
     req: IncomingMessage,
     res: ServerResponse,
@@ -89,6 +97,7 @@ export class Extensions extends EventEmitter {
             ...p,
             invertScroll: p.invertScroll === true,
             swapAltWin: p.swapAltWin === true,
+            entryDisplay: validDisplayId(p.entryDisplay) ? p.entryDisplay : "",
           });
       // Sharing requires a fresh opt-in after every application restart.
     } catch (e) {
@@ -108,6 +117,12 @@ export class Extensions extends EventEmitter {
       clipboardEnabled: this.clipboardEnabled,
       controlEnabled: this.controlEnabled,
       control: this.service.extensionSnapshot.control,
+      displayLayouts: Object.fromEntries(
+        [...this.displayLayouts].map(([fp, layout]) => [
+          fp,
+          structuredClone(layout),
+        ]),
+      ),
     };
   }
   publish() {
@@ -206,6 +221,7 @@ export class Extensions extends EventEmitter {
         side: "right",
         invertScroll: false,
         swapAltWin: false,
+        entryDisplay: "",
       });
       await this.save();
     } finally {
@@ -218,6 +234,7 @@ export class Extensions extends EventEmitter {
     const device = this.service.devices.get(fp);
     if (!trust) return;
     this.trusted.delete(fp);
+    this.displayLayouts.delete(fp);
     await this.save();
     this.publish();
     this.emit("trustChanged", fp);
@@ -233,13 +250,23 @@ export class Extensions extends EventEmitter {
     patch: Partial<
       Pick<
         TrustedPeer,
-        "clipboard" | "control" | "side" | "invertScroll" | "swapAltWin"
+        | "clipboard"
+        | "control"
+        | "side"
+        | "invertScroll"
+        | "swapAltWin"
+        | "entryDisplay"
       >
     >,
   ) {
     const peer = this.trusted.get(fp);
     if (!peer) throw new Error("设备尚未配对");
     const next = { ...peer };
+    if (patch.entryDisplay !== undefined) {
+      if (patch.entryDisplay !== "" && !validDisplayId(patch.entryDisplay))
+        throw new Error("入口显示器设置无效");
+      next.entryDisplay = patch.entryDisplay;
+    }
     for (const key of [
       "clipboard",
       "control",
@@ -254,6 +281,15 @@ export class Extensions extends EventEmitter {
       if (patch.side !== "left" && patch.side !== "right")
         throw new Error("位置无效");
       next.side = patch.side;
+      const layout = this.displayLayouts.get(fp);
+      if (
+        next.entryDisplay &&
+        layout &&
+        !entryDisplays(layout, next.side === "right" ? "left" : "right").some(
+          (d) => d.id === next.entryDisplay,
+        )
+      )
+        next.entryDisplay = "";
     }
     this.trusted.set(fp, next);
     await this.save();
@@ -265,6 +301,27 @@ export class Extensions extends EventEmitter {
     this.controlEnabled = control;
     this.publish();
     this.emit("settingsChanged");
+  }
+  async fetchDisplayLayout(fp: string): Promise<DisplayLayout> {
+    const result = await this.call(fp, "/displays", {}, { timeout: 3000 });
+    if (result.status === 404 || result.status === 501)
+      throw new Error("对方不支持多屏入口设置，请升级对方的 LocalShare");
+    const layout = parseDisplayLayout(jsonReply(result));
+    // Unpairing during a request must not republish cached metadata.
+    const peer = this.trusted.get(fp);
+    if (!peer) throw new Error("设备已取消配对");
+    this.displayLayouts.set(fp, layout);
+    if (
+      peer.entryDisplay &&
+      !entryDisplays(layout, peer.side === "right" ? "left" : "right").some(
+        (d) => d.id === peer.entryDisplay,
+      )
+    ) {
+      await this.setPeer(fp, { entryDisplay: "" });
+      this.emit("notice", "原入口已不可用，已恢复自动选择；请重新跨屏。");
+    }
+    this.publish();
+    return structuredClone(layout);
   }
   canControl(fp: string) {
     return this.controlEnabled && this.trusted.get(fp)?.control === true;
@@ -417,6 +474,7 @@ export class Extensions extends EventEmitter {
         side: "left",
         invertScroll: false,
         swapAltWin: false,
+        entryDisplay: "",
       });
       await this.save();
       this.removePending(p.public.id);
@@ -428,6 +486,7 @@ export class Extensions extends EventEmitter {
     if (known) known.lastSeen = Date.now();
     if (path === "/unpair") {
       this.trusted.delete(peer.fingerprint);
+      this.displayLayouts.delete(peer.fingerprint);
       await this.save();
       this.publish();
       this.emit("trustChanged", peer.fingerprint);
@@ -450,6 +509,13 @@ export class Extensions extends EventEmitter {
         this.emit("clipboard", data.text);
       }
       reply(res, 200, { ok: true });
+      return true;
+    }
+    if (path === "/displays") {
+      await readJSON(req, 1024);
+      if (!this.displayProvider)
+        throw new HttpError(501, "此设备不支持多屏入口设置，请升级应用");
+      reply(res, 200, parseDisplayLayout(await this.displayProvider()));
       return true;
     }
     if (path.startsWith("/control/") && this.controlHandler)

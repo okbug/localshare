@@ -32,5 +32,6 @@ const api: DesktopAPI = {
     call("extensionSettings", clipboard, control),
   requestPermission: () => call("requestPermission"),
   emergencyStop: () => call("emergencyStop"),
+  refreshDisplays: (fp) => call("refreshDisplays", fp),
 };
 contextBridge.exposeInMainWorld("localshare", api);
