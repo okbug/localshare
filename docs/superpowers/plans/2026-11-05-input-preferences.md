@@ -26,4 +26,4 @@
 - [x] Add an accessible settings group per device with two independent existing Toggle components. Include mapping and next-session guidance.
 - [x] Extend scripts/smoke.ts to click switches, assert default/true/false snapshots, and reject malformed input via IPC. Run `bun run build && bun run smoke`; inspect saved connect screenshot.
 - [x] Update README and release notes, bump to 0.1.3, set release workflow default. Run formatting, typecheck, full tests, build, Mac signature validation and package smoke as appropriate.
-- [ ] Commit and push; use existing cloud release workflow to build Mac and Windows, wait for native self-tests and publish success; verify assets before delivering links.
+- [x] Commit and push; use existing cloud release workflow to build Mac and Windows, wait for native self-tests and publish success; verify assets before delivering links. Release run: 41994677510; application commit: d021ae5.
