@@ -49,7 +49,11 @@ function release(): Release {
   const releases = JSON.parse(
     gh(["api", `repos/${repo}/releases?per_page=30`]),
   ) as Release[];
-  const item = releases.find((r) => r.tag_name === tag);
+  // GitHub may assign an untagged-* placeholder to a newly created draft.
+  // Identify only our version-specific draft before PATCH sets the real tag.
+  const item =
+    releases.find((r) => r.tag_name === tag) ??
+    releases.find((r) => r.draft && r.name?.startsWith(`LocalShare ${tag} `));
   if (!item) throw new Error("Preview draft not found");
   return item;
 }
